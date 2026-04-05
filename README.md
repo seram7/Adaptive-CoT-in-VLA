@@ -1,6 +1,6 @@
 # Adaptive CoT in VLA: Chain-of-Thought for Vision-Language-Action Models with Uncertain Task
 
-Dongwha Kang, Sehee Kweon, Wooyual Jung
+Dongwha Kang, Sehee Kweon, Wooyul Jung
 
 ---
 
