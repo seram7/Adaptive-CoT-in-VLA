@@ -65,8 +65,8 @@ def get_vla(cfg):
         with open(dataset_statistics_path, "r") as f:
             norm_stats = json.load(f)
         vla.norm_stats = norm_stats
-    elif cfg.norm_stats and os.path.isfile(cfg.norm_stats):
-        with open(cfg.norm_stats, "r") as f:
+    elif cfg.unnorm_key and os.path.isfile(os.path.join(cfg.pretrained_checkpoint, f"{cfg.unnorm_key}_dataset_statistics.json")):
+        with open(cfg.unnorm_key, "r") as f:
             norm_stats = json.load(f)
         vla.norm_stats = norm_stats
     else:
@@ -168,7 +168,7 @@ def crop_and_resize(image, crop_scale, batch_size):
     return image
 
 
-def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, max_new_tokens=None, prompts=None):
+def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, max_new_tokens=None, prompts=None, return_dict_in_generate=True, output_scores=True):
     """Generates an action with the VLA policy."""
 
     image = Image.fromarray(obs["full_image"])
@@ -259,14 +259,14 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
     # Get action
     if 'ecot' in base_vla_name: # ECoT
         start_time = time.perf_counter()
-        action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False, use_cache=True, max_new_tokens=max_new_tokens)
+        action, generated_ids, action_scores = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False, use_cache=True, max_new_tokens=max_new_tokens, return_dict_in_generate=return_dict_in_generate, output_scores=output_scores)
         infer_time = time.perf_counter() - start_time
-        return infer_time, action # action, generated_ids
+        return infer_time, action, generated_ids, action_scores # action, generated_ids, action_scores
     else: # OpenVLA
         start_time = time.perf_counter()
         action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
         infer_time = time.perf_counter() - start_time
-        return infer_time, action, [[]]
+        return infer_time, action, [[]], None
 
 
 # M: batch prediction
