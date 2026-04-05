@@ -1,14 +1,128 @@
-# Adaptive CoT in VLA: Chain-of-Thought for Vision-Language-Action Models with Uncertain Task
+# Adaptive CoT in VLA: Chain-of-Thought for Vision-Language-Action Models in Uncertain Scenarios
 
 Dongwha Kang, Sehee Kweon, Wooyul Jung
 
 ---
 
-We propose **Adaptive CoT in VLA** is an inference-time method for Embodied Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models. It exploits uncertainty from the action tokens to **(1)** improve success rate, and **(2)** to apply CoT in adequate scenarios. Experiments in LIBERO simulation shows  **proper Chain-of-Thought is helpful** by improving task success rate and reasoning faithfulness.
-
+**Adaptive CoT in VLA** is an Embodied Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models in uncertain scenarios. CoT is used to improve success rate and reasoning faithfulness when the uncertainty from the action tokens is high. Experiments in LIBERO simulation shows  **proper Chain-of-Thought is helpful** by improving task success rate and reasoning faithfulness.
+<p align="center">
+  <img src="media/concept.png" alt="VLA CoT for Uncertain Scenario" width="100%">
+</p>
 <!-- > Embodied Chain-of-Thought (ECoT) reasoning enhances VLA models by improving performance and interpretability through intermediate reasoning steps.  -->
 <!-- However, its sequential autoregressive token generation introduces significant inference latency, limiting real-time deployment.  -->
 
+
+## Dataset
+
+We train and evaluate our method on the **LIBERO-Spatial** dataset, which contains 10 manipulation tasks that require **spatial reasoning** — for example, placing an object relative to another object ("put the bowl *on top of* the plate," "put the mug *to the left of* the plate"). These tasks are well-suited for evaluating the effect of reasoning, since the robot must identify spatial relationships before acting.
+
+**Why LIBERO-Spatial?**
+- **Reasoning-sensitive tasks:** The spatial nature of the tasks allows us to clearly observe the impact of Embodied Chain-of-Thought (ECoT) reasoning on uncertain or ambiguous scenes.
+- **Randomized evaluation environments:** LIBERO generates a new scene configuration (object positions, distractors, etc.) every time an evaluation episode is run. This provides a clean separation between **training** and **evaluation** conditions, so reported success rates reflect true generalization rather than memorization.
+- **Rich annotations:** The dataset includes task-, plan-, and subtask-level reasoning annotations, which are necessary for training and evaluating ECoT policies.
+
+We use **two versions** of LIBERO in this project:
+1. **Original LIBERO-Spatial (HDF5 format)** — used for **evaluation** in the LIBERO simulator.
+2. **LIBERO-RLDS (modified, no-noops)** — used for **training** the VLA policy, following the OpenVLA/ECoT pipeline.
+
+---
+
+### 1. (for evaluation) Original LIBERO-Spatial 
+
+The original LIBERO dataset is provided in HDF5 format by the [official LIBERO repository](https://github.com/Lifelong-Robot-Learning/LIBERO). It is required for running evaluation rollouts in the LIBERO simulator.
+```bash
+# Clone the LIBERO repo (provides the simulator + download utility)
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
+cd LIBERO
+pip install -e .
+
+# Download the LIBERO-Spatial split
+python benchmark_scripts/download_libero_datasets.py --datasets libero_spatial
+
+# Saved under: ./datasets/libero_spatial/
+```
+
+---
+
+### 2. (for training) LIBERO-RLDS — modified, no-noops
+
+For training, we use the **RLDS-formatted** version released by OpenVLA, which removes no-op actions for more efficient policy learning. This is the standard training format used by OpenVLA and ECoT.
+
+Source: [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds/tree/main/libero_10_no_noops/1.0.0)
+```bash
+# Install huggingface CLI if not already installed
+pip install -U "huggingface_hub[cli]"
+
+# Download the LIBERO-Spatial (no-noops) RLDS split
+huggingface-cli download openvla/modified_libero_rlds \
+    --repo-type dataset \
+    --include "libero_spatial_no_noops/*" \
+    --local-dir ./datasets/modified_libero_rlds
+```
+
+> **Note:** The HuggingFace repo contains multiple splits (`libero_spatial_no_noops`, `libero_object_no_noops`, `libero_goal_no_noops`, `libero_10_no_noops`). Replace the `--include` pattern above with the split you want to download. To grab all splits at once, omit the `--include` flag.
+```
+After downloading, the directory structure should look like:
+datasets/
+├── libero_spatial/                        # original HDF5 (evaluation)
+│   └── *.hdf5
+└── modified_libero_rlds/                  # RLDS (training)
+└── libero_spatial_no_noops/
+└── 1.0.0/
+├── dataset_info.json
+├── features.json
+└── .tfrecord-
+```
+Update the dataset paths in your config file accordingly:
+```yaml
+# configs/dataset.yaml
+eval_dataset_path: ./datasets/libero_spatial/
+train_dataset_path: ./datasets/modified_libero_rlds/libero_spatial_no_noops/1.0.0/
+```
+
+## Model
+
+We build on two Vision-Language-Action (VLA) architectures: **OpenVLA** and **ECoT (Embodied Chain-of-Thought)**.
+
+### OpenVLA
+
+OpenVLA is a 7B-parameter VLA model built on a vision-language backbone (Prismatic VLM). It takes a single RGB image and a natural language task instruction as input, and directly predicts a 7-DoF robot action (Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper).
+
+<p align="center">
+  <img src="assets/openvla_arch.png" width="80%" alt="OpenVLA architecture"/>
+</p>
+
+### ECoT (Embodied Chain-of-Thought)
+
+ECoT extends OpenVLA by injecting a **chain-of-thought reasoning step** before action prediction. Given the same image and instruction, the model first generates structured reasoning tokens — task description, plan, and subtask decomposition — then predicts the action conditioned on this reasoning trace. This explicit reasoning improves performance on tasks that require spatial understanding and multi-step planning.
+
+<p align="center">
+  <img src="assets/ECoT_arch.png" width="80%" alt="ECoT architecture"/>
+</p>
+
+### Pretrained Checkpoints
+
+| Model | Dataset | Checkpoint |
+|---|---|---|
+| OpenVLA (fine-tuned) | LIBERO-Spatial | [openvla-7b-finetuned-libero-spatial](https://huggingface.co/openvla/openvla-7b-finetuned-libero-spatial) |
+| ECoT (LoRA, rank 32) | LIBERO-Spatial | [ecot-libero-spatial-r32](https://huggingface.co/leepanic/ecot-libero-spatial-r32/tree/main) |
+
+To download a checkpoint:
+```bash
+# OpenVLA fine-tuned
+git clone https://huggingface.co/openvla/openvla-7b-finetuned-libero-spatial
+cd openvla-7b-finetuned-libero-spatial && git lfs fetch --all && cd ..
+
+# ECoT LoRA
+git clone https://huggingface.co/leepanic/ecot-libero-spatial-r32
+cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
+```
+
+## Demo
+
+<p align="center">
+  <img src="media/demo.gif" alt="Fast ECoT Demo" width="100%">
+</p>
 
 ## Installation
 
@@ -59,82 +173,6 @@ python -c "import libero; print('LIBERO: OK')"
 ```
 
 All three commands should print without error.
-
-
-## Dataset
-
-We train and evaluate our method on the **LIBERO-Spatial** dataset, which contains 10 manipulation tasks that require **spatial reasoning** — for example, placing an object relative to another object ("put the bowl *on top of* the plate," "put the mug *to the left of* the plate"). These tasks are well-suited for evaluating the effect of reasoning, since the robot must identify spatial relationships before acting.
-
-**Why LIBERO-Spatial?**
-- **Reasoning-sensitive tasks:** The spatial nature of the tasks allows us to clearly observe the impact of Embodied Chain-of-Thought (ECoT) reasoning on uncertain or ambiguous scenes.
-- **Randomized evaluation environments:** LIBERO generates a new scene configuration (object positions, distractors, etc.) every time an evaluation episode is run. This provides a clean separation between **training** and **evaluation** conditions, so reported success rates reflect true generalization rather than memorization.
-- **Rich annotations:** The dataset includes task-, plan-, and subtask-level reasoning annotations, which are necessary for training and evaluating ECoT policies.
-
-We use **two versions** of LIBERO in this project:
-1. **Original LIBERO-Spatial (HDF5 format)** — used for **evaluation** in the LIBERO simulator.
-2. **LIBERO-RLDS (modified, no-noops)** — used for **training** the VLA policy, following the OpenVLA/ECoT pipeline.
-
----
-
-### 1. Original LIBERO-Spatial (for evaluation)
-
-The original LIBERO dataset is provided in HDF5 format by the [official LIBERO repository](https://github.com/Lifelong-Robot-Learning/LIBERO). It is required for running evaluation rollouts in the LIBERO simulator.
-```bash
-# Clone the LIBERO repo (provides the simulator + download utility)
-git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
-cd LIBERO
-pip install -e .
-
-# Download the LIBERO-Spatial split
-python benchmark_scripts/download_libero_datasets.py --datasets libero_spatial
-
-# Saved under: ./datasets/libero_spatial/
-```
-
----
-
-### 2. LIBERO-RLDS — modified, no-noops (for training)
-
-For training, we use the **RLDS-formatted** version released by OpenVLA, which removes no-op actions for more efficient policy learning. This is the standard training format used by OpenVLA and ECoT.
-
-Source: [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds/tree/main/libero_10_no_noops/1.0.0)
-```bash
-# Install huggingface CLI if not already installed
-pip install -U "huggingface_hub[cli]"
-
-# Download the LIBERO-Spatial (no-noops) RLDS split
-huggingface-cli download openvla/modified_libero_rlds \
-    --repo-type dataset \
-    --include "libero_spatial_no_noops/*" \
-    --local-dir ./datasets/modified_libero_rlds
-```
-
-> **Note:** The HuggingFace repo contains multiple splits (`libero_spatial_no_noops`, `libero_object_no_noops`, `libero_goal_no_noops`, `libero_10_no_noops`). Replace the `--include` pattern above with the split you want to download. To grab all splits at once, omit the `--include` flag.
-```
-After downloading, the directory structure should look like:
-datasets/
-├── libero_spatial/                        # original HDF5 (evaluation)
-│   └── *.hdf5
-└── modified_libero_rlds/                  # RLDS (training)
-└── libero_spatial_no_noops/
-└── 1.0.0/
-├── dataset_info.json
-├── features.json
-└── .tfrecord-
-```
-Update the dataset paths in your config file accordingly:
-```yaml
-# configs/dataset.yaml
-eval_dataset_path: ./datasets/libero_spatial/
-train_dataset_path: ./datasets/modified_libero_rlds/libero_spatial_no_noops/1.0.0/
-```
-
-
-## Demo
-
-<p align="center">
-  <img src="media/demo.gif" alt="Fast ECoT Demo" width="100%">
-</p>
 
 
 ## Training
@@ -205,7 +243,6 @@ torchrun --standalone --nnodes 1 --nproc-per-node 2 vla-scripts/finetune.py \
 
 #### Key Parameters
 
-```
 | Parameter | Description | Default |
 |---|---|---|
 | `--vla_path` | HuggingFace model path or local checkpoint | `openvla/openvla-7b` |
@@ -219,16 +256,15 @@ torchrun --standalone --nnodes 1 --nproc-per-node 2 vla-scripts/finetune.py \
 | `--action_loss` | Add explicit action-only loss term | `False` |
 | `--save_steps` | Checkpoint save interval (gradient steps) | `50000` |
 | `--use_quantization` | 4-bit quantization for reduced memory | `False` |
-```
+
 #### Memory Requirements
 
-```
 | Setup | GPU Memory |
 |---|---|
 | LoRA (rank 32, batch 12) | ~48 GB |
 | LoRA (rank 32, batch 24) | ~80 GB |
 | Full fine-tune | 8× 80 GB GPUs recommended |
-```
+
 
 ## Evaluation
 
