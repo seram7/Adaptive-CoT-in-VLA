@@ -503,27 +503,37 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         # Compute vocab size for de-tokenization -- revert added "multiple of"
         self.vocab_size = self.config.text_config.vocab_size - self.config.pad_to_multiple_of
 
+    ## you should modify predct_action() in .cache/huggingface/modules/transformers_moodules/Embodied-CoT/ecot-openvla-7b-oxe/*/modeling_prismatic.py
     def predict_action(
-        self, input_ids: Optional[torch.LongTensor] = None, unnorm_key: Optional[str] = None, **kwargs: str
-    ) -> np.ndarray:
-        """Thin wrapper around super().generate() that decodes predicted actions and de-normalizes them."""
+        self, input_ids=None, unnorm_key=None, **kwargs
+    ):
+        input_ids = torch.cat(
+            (input_ids, torch.tensor([[29871]], device=input_ids.device, dtype=torch.long)),
+            dim=1,
+        )
+        input_len = input_ids.shape[1]
 
-        # We need to add this special empty token ('') after the colon (':') token in "ASSISTANT:"
-        # in order for the predictions to match the training configuration and be accurate.
-        # input_ids = torch.cat(
-        #     (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
-        # )
+        outputs = self.generate(input_ids, **kwargs)
+        generated_ids = outputs.sequences
+        scores = outputs.scores
+        new_ids = generated_ids[:, input_len:]
 
-        # Run VLA inference
-        generated_ids = self.generate(input_ids, **kwargs)
+        print("new token count:", new_ids.shape[1])
+        print("new ids:", new_ids[0].cpu().tolist())
+        print("action_dim:", self.get_action_dim(unnorm_key))
+        
+        action_dim = self.get_action_dim(unnorm_key)
+        predicted_action_token_ids = new_ids[0, -action_dim-1:-1].cpu().numpy()
+        action_scores = scores[-action_dim-1:-1]
 
-        # Extract predicted action tokens and translate into (normalized) continuous actions
-        predicted_action_token_ids = generated_ids[0, -self.get_action_dim(unnorm_key) :].cpu().numpy()
         discretized_actions = self.vocab_size - predicted_action_token_ids
-        discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
+        discretized_actions = np.clip(
+            discretized_actions - 1,
+            a_min=0,
+            a_max=self.bin_centers.shape[0] - 1,
+        )
         normalized_actions = self.bin_centers[discretized_actions]
 
-        # Unnormalize actions
         action_norm_stats = self.get_action_stats(unnorm_key)
         mask = action_norm_stats.get("mask", np.ones_like(action_norm_stats["q01"], dtype=bool))
         action_high, action_low = np.array(action_norm_stats["q99"]), np.array(action_norm_stats["q01"])
@@ -533,7 +543,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             normalized_actions,
         )
 
-        return actions, generated_ids
+        return actions, new_ids, action_scores
 
     @staticmethod
     def _check_unnorm_key(norm_stats: Dict[str, Dict[str, Any]], unnorm_key: Optional[str]) -> str:
