@@ -4,25 +4,27 @@ Dongwha Kang, Sehee Kweon, Wooyual Jung
 
 ---
 
-**Adaptive CoT in VLA** is an inference-time method for Embodied Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models. It brings ECoT/Fast ECoT policies closer to **practical real-time deployment** without any model changes or additional training.
+We propose **Adaptive CoT in VLA** is an inference-time method for Embodied Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models. It exploits uncertainty from the action tokens to **(1)** improve success rate, and **(2)** to apply CoT in adequate scenarios. Experiments in LIBERO simulation shows  **proper Chain-of-Thought is helpful** by improving task success rate and reasoning faithfulness.
 
-> Embodied Chain-of-Thought (ECoT) reasoning enhances VLA models by improving performance and interpretability through intermediate reasoning steps. 
+<!-- > Embodied Chain-of-Thought (ECoT) reasoning enhances VLA models by improving performance and interpretability through intermediate reasoning steps.  -->
 <!-- However, its sequential autoregressive token generation introduces significant inference latency, limiting real-time deployment.  -->
-We propose **Adaptive ECoT**, which exploits uncertainty from the action tokens to **(1)** improve success rate, and **(2)** to apply CoT in adequate scenarios. Experiments in LIBERO simulation shows  **proper Chain-of-Thought is helpful** by improving task success rate and reasoning faithfulness.
+
 
 ## Installation
 
 ### Prerequisites
 - **OS:** Linux (Ubuntu 20.04 / 22.04 recommended)
-- **GPU:** NVIDIA GPU with ≥ 24 GB VRAM (e.g., RTX 3090 / 4090, A100)
+- **GPU:** 
+(for training) NVIDIA GPU with ≥ 24 GB VRAM (e.g., RTX 3090 / 4090, A100) 
+(for evaluation) NVIDIA GPU with ≥ 16 GB VRAM (e.g., RTX 3060 / 3070, A100)
 - **CUDA:** 12.1 or 12.4
 - **Python:** 3.10
 - **Conda** (Miniconda or Anaconda)
 
 ### 1. Create the conda environment
 ```bash
-conda create -n fast-ecot python=3.10 -y
-conda activate fast-ecot
+conda create -n VLA python=3.10 -y
+conda activate VLA
 ```
 
 ### 2. Install PyTorch
@@ -34,10 +36,10 @@ See the [official selector](https://pytorch.org/get-started/locally/) if you nee
 conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia -y
 ```
 
-### 3. Clone and install Fast-ECoT
+### 3. Clone and install Adaptive-CoT-in-VLA repository
 ```bash
-git clone https://github.com/kevinDuan1/Fast-ECoT.git
-cd Fast-ECoT
+git clone https://github.com/seram7/Adaptive-CoT-in-VLA.git
+cd Adaptive-CoT-in-VLA
 pip install -e .
 ```
 
@@ -58,16 +60,6 @@ python -c "import libero; print('LIBERO: OK')"
 
 All three commands should print without error.
 
-
-
-## Dataset
-
-We train and evaluate our method on the **LIBERO-Spatial** dataset, which contains 10 manipulation tasks that require **spatial reasoning** — for example, placing an object relative to another object ("put the bowl *on top of* the plate," "put the mug *to the left of* the plate"). These tasks are well-suited for evaluating the effect of reasoning, since the robot must identify spatial relationships before acting.
-
-**Why LIBERO-Spatial?**
-- **Reasoning-sensitive tasks:** The spatial nature of the tasks allows us to clearly observe the impact of Embodied Chain-of-Thought (ECoT) reasoning on uncertain or ambiguous scenes.
-- **Randomized evaluation environments:** LIBERO generates a new scene configuration (object positions, distractors, etc.) every time an evaluation episode is run. This provides a clean separation between **training** and **evaluation** conditions, so reported success rates reflect true generalization rather than memorization.
-- **Rich annotations:** The dataset includes task-, plan-, and subtask-level reasoning annotations, which are necessary for training and evaluating ECoT policies.
 
 ## Dataset
 
@@ -118,7 +110,7 @@ huggingface-cli download openvla/modified_libero_rlds \
 ```
 
 > **Note:** The HuggingFace repo contains multiple splits (`libero_spatial_no_noops`, `libero_object_no_noops`, `libero_goal_no_noops`, `libero_10_no_noops`). Replace the `--include` pattern above with the split you want to download. To grab all splits at once, omit the `--include` flag.
-
+```
 After downloading, the directory structure should look like:
 datasets/
 ├── libero_spatial/                        # original HDF5 (evaluation)
@@ -129,7 +121,7 @@ datasets/
 ├── dataset_info.json
 ├── features.json
 └── .tfrecord-
-
+```
 Update the dataset paths in your config file accordingly:
 ```yaml
 # configs/dataset.yaml
@@ -138,33 +130,50 @@ train_dataset_path: ./datasets/modified_libero_rlds/libero_spatial_no_noops/1.0.
 ```
 
 
-## Fine-tuning 
-
-### pretrained models
-
-### finetuning
-
 ## Demo
 
 <p align="center">
   <img src="media/demo.gif" alt="Fast ECoT Demo" width="100%">
 </p>
 
-## Key Features
-
-| Technique | Description |
-|---|---|
-| **Thought Caching & Reuse** | Caches high-level reasoning (task, plan, subtask) across timesteps and reuses them when unchanged, avoiding redundant generation |
-| **Parallel Reasoning Generation** | Parallelises the generation of modular ECoT reasoning steps using batched prompts with cached history |
-| **Asynchronous Scheduler** | Decouples reasoning generation from action decoding, enabling the robot to act while new reasoning is being computed |
-
 
 ## Training
+
+### Prerequisites
+
+Make sure you have completed the [installation steps](#installation) before proceeding.
+
+#### Download Base Models and Data
+```bash
+# Install Git LFS
+sudo apt update && sudo apt install git-lfs
+git lfs install
+
+# Download the base model
+git clone https://huggingface.co/openvla/openvla-7b-prismatic
+cd openvla-7b-prismatic && git lfs fetch --all && cd ..
+
+# (Optional) Download the ECoT-finetuned base model for LoRA fine-tuning
+git clone https://huggingface.co/Embodied-CoT/ecot-openvla-7b-oxe
+
+# Download dataset (written in [Dataset section](#dataset))
+git clone https://huggingface.co/datasets/openvla/modified_libero_rlds
+```
+
+#### Prepare Reasoning Annotations
+
+If using ECoT reasoning, place the reasoning JSON file in the dataset directory:
+```bash
+cp reasoning.json <DATA_ROOT_DIR>/<DATASET_NAME>/reasoning.json
+```
+
+> **Note:** `<DATA_ROOT_DIR>` is the parent directory containing your RLDS datasets (e.g., `./datasets/modified_libero_rlds`), and `<DATASET_NAME>` is the specific split you're training on (e.g., `libero_spatial_no_noops`).
+
+---
 
 ### Full Fine-Tuning
 
 Train from scratch on RLDS-formatted datasets:
-
 ```bash
 torchrun --standalone --nnodes 1 --nproc-per-node 8 vla-scripts/train.py \
   --vla.type "prism-dinosiglip-224px+mx-bridge" \
@@ -177,7 +186,6 @@ torchrun --standalone --nnodes 1 --nproc-per-node 8 vla-scripts/train.py \
 ### LoRA Fine-Tuning
 
 Parameter-efficient fine-tuning with LoRA on specific datasets:
-
 ```bash
 torchrun --standalone --nnodes 1 --nproc-per-node 2 vla-scripts/finetune.py \
   --vla_path "Embodied-CoT/ecot-openvla-7b-oxe" \
@@ -195,7 +203,32 @@ torchrun --standalone --nnodes 1 --nproc-per-node 2 vla-scripts/finetune.py \
   --save_steps 20000
 ```
 
-See [finetuning guide](docs/finetuning.md) for detailed instructions on fine-tuning with different datasets (LIBERO, Bridge, DROID).
+#### Key Parameters
+
+```
+| Parameter | Description | Default |
+|---|---|---|
+| `--vla_path` | HuggingFace model path or local checkpoint | `openvla/openvla-7b` |
+| `--data_root_dir` | Root directory containing RLDS datasets | — |
+| `--dataset_name` | Name of the dataset to fine-tune on | — |
+| `--lora_rank` | Rank of LoRA weight matrices | `32` |
+| `--learning_rate` | Learning rate | `2e-5` |
+| `--batch_size` | Batch size per GPU | `16` |
+| `--image_aug` | Enable image augmentations | `True` |
+| `--reasoning_dropout_prob` | Dropout for reasoning tokens during training | `0.0` |
+| `--action_loss` | Add explicit action-only loss term | `False` |
+| `--save_steps` | Checkpoint save interval (gradient steps) | `50000` |
+| `--use_quantization` | 4-bit quantization for reduced memory | `False` |
+```
+#### Memory Requirements
+
+```
+| Setup | GPU Memory |
+|---|---|
+| LoRA (rank 32, batch 12) | ~48 GB |
+| LoRA (rank 32, batch 24) | ~80 GB |
+| Full fine-tune | 8× 80 GB GPUs recommended |
+```
 
 ## Evaluation
 
@@ -213,39 +246,6 @@ python experiments/robot/libero/run_libero_eval.py \
 
 **Task suites**: `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, `libero_90`
 
-**Fast ECoT flags**:
-- `--use_vllm True` — Enable vLLM-accelerated inference
-- `--reasoning True` — Enable ECoT reasoning generation
-- `--async_engine True` — Enable asynchronous reasoning scheduler
-
-### Batch Evaluation
-
-Run batch evaluation across multiple configs:
-
-```bash
-python experiments/robot/libero/run_libero_eval_batch.py \
-  --model_family openvla \
-  --pretrained_checkpoint <CHECKPOINT_PATH> \
-  --task_suite_name libero_object \
-  --center_crop True \
-  --reasoning True
-```
-
-### Real-World Robots
-
-#### Bridge (WidowX)
-
-```bash
-python experiments/robot/bridge/run_bridgev2_eval.py \
-  --pretrained_checkpoint <CHECKPOINT_PATH>
-```
-
-#### DROID
-
-```bash
-python experiments/robot/droid/run_droid_eval.py \
-  --pretrained_checkpoint <CHECKPOINT_PATH>
-```
 
 ## Repository Structure
 
