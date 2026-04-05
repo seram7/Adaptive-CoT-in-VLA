@@ -1,4 +1,4 @@
-# Fast ECoT: Efficient Embodied Chain-of-Thought via Thoughts Reuse
+# Adaptive CoT in VLA: Chain-of-Thought for Vision-Language-Action Models with Uncertain Task
 
 [![arXiv](https://img.shields.io/badge/arXiv-2506.07639-df2a2a.svg)](https://arxiv.org/abs/2506.07639)
 [![Python](https://img.shields.io/badge/python-3.10-blue)](https://www.python.org)
@@ -8,7 +8,7 @@
 
 ---
 
-**Fast ECoT** is an inference-time acceleration method for Embodied Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models. It brings ECoT policies closer to **practical real-time deployment** without any model changes or additional training.
+**Adaptive CoT in VLA** is an inference-time method for Embodied Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models. It brings ECoT policies closer to **practical real-time deployment** without any model changes or additional training.
 
 > Embodied Chain-of-Thought (ECoT) reasoning enhances VLA models by improving performance and interpretability through intermediate reasoning steps. However, its sequential autoregressive token generation introduces significant inference latency, limiting real-time deployment. We propose **Fast ECoT**, which exploits the structured and repetitive nature of ECoT to **(1)** cache and reuse high-level reasoning across timesteps, **(2)** parallelise the generation of modular reasoning steps, and **(3)** decouple reasoning from action decoding via an asynchronous scheduler. Experiments in both simulation (LIBERO) and real-world robot tasks show **up to 7.5× reduction in latency** with comparable or improved task success rate and reasoning faithfulness.
 
