@@ -133,10 +133,23 @@ cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
 ## Qualitative Results
 
 <p align="center">
-  <img src="media/openvla.gif" width="45%">
-  <img src="media/ecot.gif" width="45%">
+  <table>
+    <tr>
+      <td align="center">
+        <img src="media/openvla.gif" width="100%">
+        <b>OpenVLA (without CoT)</b>
+        <br>
+        entropy : 0.73 | success : False
+      </td>
+      <td align="center">
+        <img src="media/ecot.gif" width="100%">
+        <b>ECoT (with CoT)</b>
+        <br>
+        entropy : 0.62 | success : True
+      </td>
+    </tr>
+  </table>
 </p>
-
 ## Installation
 
 ### Prerequisites
