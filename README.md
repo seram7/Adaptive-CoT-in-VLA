@@ -396,3 +396,24 @@ This codebase is built on top of the following excellent works:
 <!-- ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE) for details. -->
+
+
+## Discussion
+
+Overall, our results suggest that **ECoT performs better than OpenVLA in uncertain situations**, but the story is more nuanced than a simple comparison.
+
+**What we found:**
+- Action entropy is a reasonable proxy for task difficulty — harder tasks tend to have higher entropy
+- CoT reasoning helps the model make better decisions when uncertainty is high
+- However, CoT comes with a cost: longer inference time per step
+
+**Key insight:**
+This suggests an **adaptive strategy** — we don't need to always use CoT. Instead, we can monitor the model's entropy in real time and only trigger CoT reasoning when uncertainty is above a certain threshold. This way, we can get the benefits of CoT without paying the full cost on every step.
+
+**Limitations:**
+- Evaluation was limited to LIBERO-Spatial due to computational constraints
+- Inference time makes real-time deployment challenging in VLA settings
+- Reproducibility was harder than expected — the original repo lacked documentation, which made replication non-trivial
+
+**What we learned:**
+Understanding the low-level details of VLA systems — input/output formats, action token structure, and model architecture — was essential to making progress. AI tools helped speed up the process, but only when paired with a solid understanding of the system.
