@@ -133,12 +133,8 @@ cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
 ## Qualitative Results
 
 <p align="center">
-  <video width="45%" controls>
-    <source src="media/openvla.mp4" type="video/mp4">
-  </video>
-  <video width="45%" controls>
-    <source src="media/ecot.mp4" type="video/mp4">
-  </video>
+  <img src="media/openvla.gif" width="45%">
+  <img src="media/ecot.gif" width="45%">
 </p>
 
 ## Installation
