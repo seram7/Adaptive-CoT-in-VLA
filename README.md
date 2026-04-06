@@ -123,7 +123,7 @@ cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
 
 ## Quantitative Results
 
-### Success Rate
+### Success Rate Comparison
 
 <p align="center">
   <img src="media/success.png" width="80%" alt="Comparison of Success Rates"/>
@@ -154,7 +154,7 @@ Both demos are evaluated in the **LIBERO** environment, where the scene is reset
   </table>
 </p>
 
-### Prerequisites
+## Prerequisites for Training and Evaluation
 - **OS:** Linux (Ubuntu 20.04 / 22.04 recommended)
 - **GPU:** 
 (for training) NVIDIA GPU with ≥ 24 GB VRAM (e.g., RTX 3090 / 4090, A100) 
@@ -393,6 +393,6 @@ This codebase is built on top of the following excellent works:
 - **[OpenVLA](https://github.com/openvla/openvla)** — The base VLA model architecture and training pipeline
 - **[vLLM](https://github.com/vllm-project/vllm)** — High-throughput LLM inference engine used for accelerated reasoning generation
 
-## License
+<!-- ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details. -->
