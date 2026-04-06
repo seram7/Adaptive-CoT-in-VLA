@@ -9,6 +9,7 @@ from pathlib import Path
 from transformers import AutoModelForVision2Seq, AutoProcessor
 
 import sys
+
 sys.path.insert(0, "/home/seram/ut/project/LIBERO")
 from experiments.robot.libero.libero_utils import (
     get_libero_dummy_action,
@@ -32,140 +33,70 @@ from experiments.robot.libero.run_libero_eval import GenerateConfig
 from experiments.robot.openvla_utils import get_processor
 
 from libero.libero import benchmark
+
 print("libero imported : OK")
 
 ACTION_TOKEN_BEGIN_IDX = 31743
 N_ACTION_BINS = 256
 ACTION_TOKEN_START = ACTION_TOKEN_BEGIN_IDX + 1
-ACTION_TOKEN_END   = ACTION_TOKEN_START + N_ACTION_BINS
+ACTION_TOKEN_END = ACTION_TOKEN_START + N_ACTION_BINS
 
 unnorm_key = {
-  "libero_spatial_no_noops": {
-    "action": {
-      "mean": [
-        0.15312467515468597,
-        0.1370728462934494,
-        -0.15526831150054932,
-        -0.005176443140953779,
-        -0.011208743788301945,
-        -0.020194262266159058,
-        0.4578818082809448
-      ],
-      "std": [
-        0.41272789239883423,
-        0.3472437262535095,
-        0.5086919665336609,
-        0.03726620972156525,
-        0.07244434952735901,
-        0.057623643428087234,
-        0.4982786774635315
-      ],
-      "max": [
-        0.9375,
-        0.9375,
-        0.9375,
-        0.1971428543329239,
-        0.33642858266830444,
-        0.375,
-        1.0
-      ],
-      "min": [
-        -0.9375,
-        -0.9375,
-        -0.9375,
-        -0.1875,
-        -0.3675000071525574,
-        -0.36000001430511475,
-        0.0
-      ],
-      "q01": [
-        -0.7454732114076613,
-        -0.6616071462631226,
-        -0.9375,
-        -0.1071428582072258,
-        -0.20678570866584778,
-        -0.1842857152223587,
-        0.0
-      ],
-      "q99": [
-        0.9375,
-        0.8758928775787354,
-        0.9321428537368774,
-        0.1039285734295845,
-        0.17678570747375488,
-        0.14571428298950195,
-        1.0
-      ],
-      "mask": [
-        True,
-        True,
-        True,
-        True,
-        True,
-        True,
-        False
-      ]
-    },
-    "proprio": {
-      "mean": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "std": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "max": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "min": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "q01": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ],
-      "q99": [
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    "num_transitions": 52970,
-    "num_trajectories": 432
-  }
+    "libero_spatial_no_noops": {
+        "action": {
+            "mean": [
+                0.15312467515468597,
+                0.1370728462934494,
+                -0.15526831150054932,
+                -0.005176443140953779,
+                -0.011208743788301945,
+                -0.020194262266159058,
+                0.4578818082809448,
+            ],
+            "std": [
+                0.41272789239883423,
+                0.3472437262535095,
+                0.5086919665336609,
+                0.03726620972156525,
+                0.07244434952735901,
+                0.057623643428087234,
+                0.4982786774635315,
+            ],
+            "max": [0.9375, 0.9375, 0.9375, 0.1971428543329239, 0.33642858266830444, 0.375, 1.0],
+            "min": [-0.9375, -0.9375, -0.9375, -0.1875, -0.3675000071525574, -0.36000001430511475, 0.0],
+            "q01": [
+                -0.7454732114076613,
+                -0.6616071462631226,
+                -0.9375,
+                -0.1071428582072258,
+                -0.20678570866584778,
+                -0.1842857152223587,
+                0.0,
+            ],
+            "q99": [
+                0.9375,
+                0.8758928775787354,
+                0.9321428537368774,
+                0.1039285734295845,
+                0.17678570747375488,
+                0.14571428298950195,
+                1.0,
+            ],
+            "mask": [True, True, True, True, True, True, False],
+        },
+        "proprio": {
+            "mean": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "std": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "max": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "min": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "q01": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "q99": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        },
+        "num_transitions": 52970,
+        "num_trajectories": 432,
+    }
 }
+
 
 def compute_step_uncertainty_from_action_scores(action_scores):
     """
@@ -181,15 +112,14 @@ def compute_step_uncertainty_from_action_scores(action_scores):
             logits_7xV: [7, vocab_size]
     """
     step_logits = torch.stack(
-        [x.squeeze(0).float().cpu() for x in action_scores],
-        dim=0
+        [x.squeeze(0).float().cpu() for x in action_scores], dim=0
     )  # [7, vocab_size]
 
     action_logits = step_logits[:, ACTION_TOKEN_START:ACTION_TOKEN_END]  # [7, 256]
     probs = torch.softmax(action_logits, dim=-1)
 
-    entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=-1)         # [7]
-    top3_mass = torch.topk(probs, k=3, dim=-1).values.sum(dim=-1)     # [7]
+    entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=-1)  # [7]
+    top3_mass = torch.topk(probs, k=3, dim=-1).values.sum(dim=-1)  # [7]
 
     return {
         "entropy_per_slot": entropy.numpy(),
@@ -198,7 +128,7 @@ def compute_step_uncertainty_from_action_scores(action_scores):
         "top3_mass_mean": float(top3_mass.mean().item()),
         "logits_7xV": step_logits,
     }
-    
+
 
 def save_rollout_pt(
     save_dir,
@@ -223,8 +153,8 @@ def save_rollout_pt(
     if len(rollout_logits) == 0:
         logits = torch.empty(0)
     else:
-        logits = torch.stack(rollout_logits, dim=0).float()   # [T, 7, vocab]
-        
+        logits = torch.stack(rollout_logits, dim=0).float()  # [T, 7, vocab]
+
     if len(entropy_series) == 0:
         entropy_series = torch.empty(0)
     else:
@@ -249,8 +179,9 @@ def save_rollout_pt(
     torch.save(payload, pt_path)
     return pt_path
 
+
 #####################
-def eval_libero_entropy(rank=0):
+def eval_libero_entropy():
     num_trials_per_task = 10
 
     checkpoint = "leepanic/ecot-libero-spatial-r32"
@@ -266,15 +197,16 @@ def eval_libero_entropy(rank=0):
         trust_remote_code=True,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
     ).to(device)
-    vla.norm_stats['libero_spatial'] = unnorm_key['libero_spatial_no_noops']
+    vla.norm_stats["libero_spatial"] = unnorm_key["libero_spatial_no_noops"]
     vla.norm_stats.update(unnorm_key)
 
     task_suite_name = "libero_spatial"
     cfg = GenerateConfig(
         pretrained_checkpoint="leepanic/ecot-libero-spatial-r32",
-        unnorm_key = task_suite_name,
-        center_crop = True,
-        num_trials_per_task = 2)
+        unnorm_key=task_suite_name,
+        center_crop=True,
+        num_trials_per_task=2,
+    )
 
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()
@@ -288,10 +220,8 @@ def eval_libero_entropy(rank=0):
     # Start evaluation
     total_episodes, total_successes = 0, 0
     num_steps_wait = 10
-    
-    selected_task_ids = range(rank, num_tasks_in_suite, 2)
-    print(f"Rank {rank} evaluating task IDs: {list(selected_task_ids)}")
-    for task_id in tqdm(selected_task_ids, desc=f"Task IDs for rank {rank}"):
+
+    for task_id in tqdm(range(num_tasks_in_suite), desc="Tasks"):
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -317,7 +247,7 @@ def eval_libero_entropy(rank=0):
             replay_images = []
             replay_reasoning = []
             if task_suite_name == "libero_spatial":
-                max_steps = 100  # longest training demo has 193 steps
+                max_steps = 220  # longest training demo has 193 steps
             elif task_suite_name == "libero_object":
                 max_steps = 280  # longest training demo has 254 steps
             elif task_suite_name == "libero_goal":
@@ -354,10 +284,14 @@ def eval_libero_entropy(rank=0):
                     observation = {
                         "full_image": img,
                         "state": np.concatenate(
-                            (obs["robot0_eef_pos"], quat2axisangle(obs["robot0_eef_quat"]), obs["robot0_gripper_qpos"])
+                            (
+                                obs["robot0_eef_pos"],
+                                quat2axisangle(obs["robot0_eef_quat"]),
+                                obs["robot0_gripper_qpos"],
+                            )
                         ),
                     }
-                    
+
                     # Query model to get action
                     inference_time, action, generated_ids, action_scores = get_action(
                         cfg,
@@ -366,21 +300,21 @@ def eval_libero_entropy(rank=0):
                         task_description,
                         processor=processor,
                         max_new_tokens=1024,
-                    ) 
-                    inference_times.append(inference_time)                 
+                    )
+                    inference_times.append(inference_time)
                     generated_text = processor.batch_decode(generated_ids)[0]
                     replay_reasoning.append(generated_text)
                     print(generated_text)
-                    
+
                     action_uncertainty = compute_step_uncertainty_from_action_scores(action_scores)
-                    rollout_logits.append(action_uncertainty["logits_7xV"])   # [7, vocab]
+                    rollout_logits.append(action_uncertainty["logits_7xV"])  # [7, vocab]
                     step_ids.append(t)
                     entropy_series.append(action_uncertainty["entropy_mean"])
                     top3_mass_series.append(action_uncertainty["top3_mass_mean"])
-                        
+
                     # Normalize gripper action [0,1] -> [-1,+1] because the environment expects the latter
                     action = normalize_gripper_action(action, binarize=True)
-                    
+
                     # [OpenVLA] The dataloader flips the sign of the gripper action to align with other datasets
                     # (0 = close, 1 = open), so flip it back (-1 = open, +1 = close) before executing the action
                     action = invert_gripper_action(action)
@@ -400,7 +334,6 @@ def eval_libero_entropy(rank=0):
                     print(f"Caught exception: {e}")
                     break
 
-            
             save_rollout_pt(
                 save_dir=save_dir,
                 task_name=task_description,
@@ -420,11 +353,14 @@ def eval_libero_entropy(rank=0):
                 replay_images, total_episodes, success=done, task_description=task_description
             )
             save_rollot_reasoning(
-                replay_reasoning, replay_images, total_episodes, success=done, task_description=task_description
+                replay_reasoning,
+                replay_images,
+                total_episodes,
+                success=done,
+                task_description=task_description,
             )
             env.close()
-        
-        
+
+
 if __name__ == "__main__":
-    rank = int(os.environ.get("RANK", "0"))
-    eval_libero_entropy(rank=rank)
+    eval_libero_entropy()

@@ -132,17 +132,21 @@ cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
 
 ## Qualitative Results
 
+Both demos are evaluated in the **LIBERO** environment, where the scene is reset with a new configuration each time (different from the training data).
+
 <p align="center">
   <table>
     <tr>
-      <td align="center">
-        <img src="media/openvla.gif" width="100%">
+      <td align="center" width="50%">
+        <img src="media/openvla.gif" width="300px">
+        <br>
         <b>OpenVLA (without CoT)</b>
         <br>
         entropy : 0.73 | success : False
       </td>
-      <td align="center">
-        <img src="media/ecot.gif" width="100%">
+      <td align="center" width="50%">
+        <img src="media/ecot.gif" width="300px">
+        <br>
         <b>ECoT (with CoT)</b>
         <br>
         entropy : 0.62 | success : True
@@ -150,7 +154,6 @@ cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
     </tr>
   </table>
 </p>
-## Installation
 
 ### Prerequisites
 - **OS:** Linux (Ubuntu 20.04 / 22.04 recommended)
@@ -294,20 +297,41 @@ torchrun --standalone --nnodes 1 --nproc-per-node 2 vla-scripts/finetune.py \
 
 ## Evaluation
 
-### LIBERO Simulation
+We evaluate both **OpenVLA** (without CoT) and **ECoT** (with CoT) on the **LIBERO-Spatial** benchmark to measure how Chain-of-Thought reasoning affects robot performance under uncertainty.
 
-```bash
-python experiments/robot/libero/run_libero_eval.py \
-  --model_family openvla \
-  --pretrained_checkpoint <CHECKPOINT_PATH> \
-  --task_suite_name libero_spatial \
-  --center_crop True \
-  --reasoning True \
-  --use_vllm True
+Each task is evaluated across 10 trials. At every step, we measure the model's uncertainty using **action entropy** — entropy computed over the 256 action token bins. A higher entropy means the model is more uncertain about which action to take.
+
+### Metrics
+- **Success Rate** — whether the robot completes the task
+- **Action Entropy** — uncertainty of the model at each step
+
+### Requirements
+- **GPU**: NVIDIA GPU with at least **24GB VRAM** (e.g. RTX 3090, A100)
+- **CUDA**: 11.8 or higher
+
+### Setup
+Make sure LIBERO is installed and the path is correctly set in the script:
+```python
+sys.path.insert(0, "/your/path/to/LIBERO")
 ```
 
-**Task suites**: `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, `libero_90`
+### Run Evaluation
+**Single GPU:**
+```bash
+python rollout_ECoT.py
+```
 
+
+### Output
+Results are saved under `./rollouts/{date}/{task_description}/`:
+- `task{id}_trial{id}.pt` — logits, entropy, and success per rollout
+- Replay videos of each episode
+- Reasoning text per step
+
+### Notes
+- Each task runs **10 trials** by default
+- Max steps per episode: **100** (libero_spatial)
+- The scene is reset with a new configuration each trial, different from training data
 <!-- 
 ## Repository Structure
 
