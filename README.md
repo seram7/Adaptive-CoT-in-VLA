@@ -1,10 +1,10 @@
-# Adaptive CoT in VLA: Chain-of-Thought for Vision-Language-Action Models in Uncertain Scenarios
+# Chain-of-Thought for Vision-Language-Action Models in Uncertain Scenarios
 
 Donghwa Kang, Sehee Kweon, Wooyul Jung
 
 ---
 
-**Adaptive CoT in VLA** is an Embodied Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models in uncertain scenarios. CoT is used to improve success rate and reasoning faithfulness when the uncertainty from the action tokens is high. Experiments in LIBERO simulation shows  **proper Chain-of-Thought is helpful** by improving task success rate and reasoning faithfulness.
+**CoT in VLA** is an Chain-of-Thought (ECoT) reasoning in vision-language-action (VLA) models in uncertain scenarios. CoT is used to improve success rate and reasoning faithfulness when the uncertainty from the action tokens is high. Experiments in LIBERO simulation shows  **proper Chain-of-Thought is helpful** by improving task success rate and reasoning faithfulness.
 <p align="center">
   <img src="media/concept.png" alt="VLA CoT for Uncertain Scenario" width="100%">
 </p>
@@ -125,10 +125,9 @@ cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
 
 ### Success Rate
 
-| Model | Success Rate (%) | Task Description | 
-|---|---|---|
-| OpenVLA (no CoT) | 45.2 | LIBERO-Spatial |
-| ECoT (with CoT) | 62.8 | LIBERO-Spatial |
+<p align="center">
+  <img src="media/success.png" width="80%" alt="Comparison of Success Rates"/>
+</p>
 
 ## Qualitative Results
 
@@ -389,7 +388,7 @@ If you find this work useful, please cite our paper:
 
 This codebase is built on top of the following excellent works:
 
-- **[Fast ECoT: Efficient Embodied Chain-of-Thought via Thoughts Reuse](https://arxiv.org/abs/2506.07639)** by Duan et al. — The original Fast ECoT method for accelerating reasoning in VLA models ([arXiv:2506.07639](https://arxiv.org/abs/2506.07639))
+- **[Fast ECoT: Efficient Embodied Chain-of-Thought via Thoughts Reuse](https://github.com/kevinDuan1/Fast-ECoT)** by Duan et al. — The original Fast ECoT method for accelerating reasoning in VLA models ([arXiv:2506.07639](https://arxiv.org/abs/2506.07639))
 - **[Embodied Chain-of-Thought (ECoT)](https://github.com/MichalZaworski/embodied-CoT)** by Zawalski et al. — The original ECoT reasoning framework for VLA models ([arXiv:2407.08693](https://arxiv.org/abs/2407.08693))
 - **[OpenVLA](https://github.com/openvla/openvla)** — The base VLA model architecture and training pipeline
 - **[vLLM](https://github.com/vllm-project/vllm)** — High-throughput LLM inference engine used for accelerated reasoning generation
