@@ -15,6 +15,9 @@ Donghwa Kang, Sehee Kweon, Wooyul Jung
 ## Dataset
 
 We train and evaluate our method on the **LIBERO-Spatial** dataset, which contains 10 manipulation tasks that require **spatial reasoning** — for example, placing an object relative to another object ("put the bowl *on top of* the plate," "put the mug *to the left of* the plate"). These tasks are well-suited for evaluating the effect of reasoning, since the robot must identify spatial relationships before acting.
+<p align="center">
+  <img src="media/libero.png" width="80%" alt="LIBERO-Spatial Dataset"/>
+</p>
 
 **Why LIBERO-Spatial?**
 - **Reasoning-sensitive tasks:** The spatial nature of the tasks allows us to clearly observe the impact of Embodied Chain-of-Thought (ECoT) reasoning on uncertain or ambiguous scenes.
@@ -67,11 +70,11 @@ datasets/
 ├── libero_spatial/                        # original HDF5 (evaluation)
 │   └── *.hdf5
 └── modified_libero_rlds/                  # RLDS (training)
-└── libero_spatial_no_noops/
-└── 1.0.0/
-├── dataset_info.json
-├── features.json
-└── .tfrecord-
+    └── libero_spatial_no_noops/
+    └── 1.0.0/
+    ├── dataset_info.json
+    ├── features.json
+    └── .tfrecord-
 ```
 Update the dataset paths in your config file accordingly:
 ```yaml
@@ -89,7 +92,7 @@ We build on two Vision-Language-Action (VLA) architectures: **OpenVLA** and **EC
 OpenVLA is a 7B-parameter VLA model built on a vision-language backbone (Prismatic VLM). It takes a single RGB image and a natural language task instruction as input, and directly predicts a 7-DoF robot action (Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper).
 
 <p align="center">
-  <img src="assets/openvla_arch.png" width="80%" alt="OpenVLA architecture"/>
+  <img src="media/openvla_arch.png" width="80%" alt="OpenVLA architecture"/>
 </p>
 
 ### ECoT (Embodied Chain-of-Thought)
@@ -97,7 +100,7 @@ OpenVLA is a 7B-parameter VLA model built on a vision-language backbone (Prismat
 ECoT extends OpenVLA by injecting a **chain-of-thought reasoning step** before action prediction. Given the same image and instruction, the model first generates structured reasoning tokens — task description, plan, and subtask decomposition — then predicts the action conditioned on this reasoning trace. This explicit reasoning improves performance on tasks that require spatial understanding and multi-step planning.
 
 <p align="center">
-  <img src="assets/ECoT_arch.png" width="80%" alt="ECoT architecture"/>
+  <img src="media/ECoT_arch.png" width="80%" alt="ECoT architecture"/>
 </p>
 
 ### Pretrained Checkpoints
@@ -118,10 +121,24 @@ git clone https://huggingface.co/leepanic/ecot-libero-spatial-r32
 cd ecot-libero-spatial-r32 && git lfs fetch --all && cd ..
 ```
 
-## Demo
+## Quantitative Results
+
+### Success Rate
+
+| Model | Success Rate (%) | Task Description | 
+|---|---|---|
+| OpenVLA (no CoT) | 45.2 | LIBERO-Spatial |
+| ECoT (with CoT) | 62.8 | LIBERO-Spatial |
+
+## Qualitative Results
 
 <p align="center">
-  <img src="media/demo.gif" alt="Fast ECoT Demo" width="100%">
+  <video width="45%" controls>
+    <source src="media/openvla.mp4" type="video/mp4">
+  </video>
+  <video width="45%" controls>
+    <source src="media/ecot.mp4" type="video/mp4">
+  </video>
 </p>
 
 ## Installation
@@ -282,7 +299,7 @@ python experiments/robot/libero/run_libero_eval.py \
 
 **Task suites**: `libero_spatial`, `libero_object`, `libero_goal`, `libero_10`, `libero_90`
 
-
+<!-- 
 ## Repository Structure
 
 ```
@@ -320,9 +337,9 @@ Our models are based on the [Embodied-CoT](https://huggingface.co/Embodied-CoT) 
 | [`ecot-openvla-7b-bridge`](https://huggingface.co/Embodied-CoT/ecot-openvla-7b-bridge) | ECoT trained on Bridge dataset with reasoning annotations (80k steps) |
 | [`ecot-openvla-7b-oxe`](https://huggingface.co/Embodied-CoT/ecot-openvla-7b-oxe) | ECoT trained on OXE, fine-tuned with Bridge reasoning (20k steps) |
 
-**Note on Licensing**: While all code is released under the MIT License, pretrained models may inherit restrictions from Llama-2 and are subject to the [Llama Community License](https://ai.meta.com/llama/license/).
+**Note on Licensing**: While all code is released under the MIT License, pretrained models may inherit restrictions from Llama-2 and are subject to the [Llama Community License](https://ai.meta.com/llama/license/). -->
 
-## Citation
+<!-- ## Citation
 
 If you find this work useful, please cite our paper:
 
@@ -333,12 +350,13 @@ If you find this work useful, please cite our paper:
     journal={arXiv preprint arXiv:2506.07639},
     year={2025}
 }
-```
+``` -->
 
-## Acknowledgements
+## References
 
 This codebase is built on top of the following excellent works:
 
+- **[Fast ECoT: Efficient Embodied Chain-of-Thought via Thoughts Reuse](https://arxiv.org/abs/2506.07639)** by Duan et al. — The original Fast ECoT method for accelerating reasoning in VLA models ([arXiv:2506.07639](https://arxiv.org/abs/2506.07639))
 - **[Embodied Chain-of-Thought (ECoT)](https://github.com/MichalZaworski/embodied-CoT)** by Zawalski et al. — The original ECoT reasoning framework for VLA models ([arXiv:2407.08693](https://arxiv.org/abs/2407.08693))
 - **[OpenVLA](https://github.com/openvla/openvla)** — The base VLA model architecture and training pipeline
 - **[vLLM](https://github.com/vllm-project/vllm)** — High-throughput LLM inference engine used for accelerated reasoning generation
