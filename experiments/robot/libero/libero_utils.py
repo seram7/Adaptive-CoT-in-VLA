@@ -61,10 +61,11 @@ def get_libero_image(obs, resize_size):
     return img
 
 
-def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):
+def save_rollout_video(rollout_images, idx, success, task_description, log_file=None,save_dir="./rollouts"):
     """Saves an MP4 replay of an episode."""
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
-    rollout_dir = f"./rollouts/{DATE}/{processed_task_description}"
+    # rollout_dir = f"./rollouts/{DATE}/{processed_task_description}"
+    rollout_dir = save_dir
     os.makedirs(rollout_dir, exist_ok=True)
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}.mp4"
     video_writer = imageio.get_writer(mp4_path, fps=30)
@@ -76,10 +77,11 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
         log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
     return mp4_path
 
-def save_rollot_reasoning(rollout_reasoning, rollout_images, idx, success, task_description, log_file=None):
+def save_rollot_reasoning(rollout_reasoning, rollout_images, idx, success, task_description, log_file=None, save_dir="./rollouts"):
     """Saves an MP4 replay of an episode."""
     processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
-    rollout_dir = f"./rollouts/{DATE}/{processed_task_description}"
+    # rollout_dir = f"./rollouts/{DATE}/{processed_task_description}"
+    rollout_dir = save_dir
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}/"
     os.makedirs(mp4_path, exist_ok=True)
     for i in range(len(rollout_reasoning)):
@@ -117,6 +119,7 @@ def quat2axisangle(quat):
 #Define some utils.
 def draw_reasoning(image, generated_text):
     tags = [f" {tag}" for tag in get_cot_tags_list()]
+    prefix = generated_text.split("PREFIX_START")[-1].split("PREFIX_END")[0] if "PREFIX_START" in generated_text and "PREFIX_END" in generated_text else ""
     reasoning = split_reasoning(generated_text, tags)
     text = [tag + reasoning[tag] for tag in [' TASK:',' PLAN:',' SUBTASK REASONING:',' SUBTASK:',
                                             ' MOVE REASONING:',' MOVE:', ' VISIBLE OBJECTS:', ' GRIPPER POSITION:'] if tag in reasoning]
@@ -128,6 +131,7 @@ def draw_reasoning(image, generated_text):
         bboxes[k.lstrip().rstrip()] = v
 
     caption = ""
+    caption += f"PREFIX: {prefix}\n\n" if prefix != "" else ""
     for t in text:
         wrapper = textwrap.TextWrapper(width=80, replace_whitespace=False) 
         word_list = wrapper.wrap(text=t) 
