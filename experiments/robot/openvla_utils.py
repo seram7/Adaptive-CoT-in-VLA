@@ -168,7 +168,7 @@ def crop_and_resize(image, crop_scale, batch_size):
     return image
 
 
-def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, max_new_tokens=None, prompts=None, return_dict_in_generate=True, output_scores=True):
+def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, max_new_tokens=None, prompts=None, return_dict_in_generate=True, output_scores=True, prefix_text=" TASK:"):
     """Generates an action with the VLA policy."""
 
     image = Image.fromarray(obs["full_image"])
@@ -205,8 +205,14 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
         prompt = (
             f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
         )
-    elif "ecot" in base_vla_name: # ECoT
-        prompt = f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT: TASK:"
+    # elif "ecot" in base_vla_name: # ECoT
+    #     prompt = f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT: TASK:"
+    elif "ecot" in base_vla_name:
+        # Use prefix_text instead of the hardcoded " TASK:"
+        prompt = (
+            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to "
+            f"{task_label.lower()}? ASSISTANT:{prefix_text}"   # ← swap here
+        )
     else:  # OpenVLA 
         prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
 

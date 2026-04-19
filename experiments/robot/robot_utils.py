@@ -59,13 +59,14 @@ def get_image_resize_size(cfg):
     return resize_size
 
 
-def get_action(cfg, model, obs, task_label, processor=None, max_new_tokens=1024, prompts=None, return_dict_in_generate=True, output_scores=True,):
+def get_action(cfg, model, obs, task_label, processor=None, max_new_tokens=1024, prompts=None, return_dict_in_generate=True, output_scores=True,prefix_text=" TASK:"):
     """Queries the model to get an action."""
     if cfg.model_family == "openvla":
         t, action, reason, action_scores = get_vla_action(
             model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop=cfg.center_crop, max_new_tokens=max_new_tokens,
             prompts=prompts,
             return_dict_in_generate=return_dict_in_generate, output_scores=output_scores,
+            prefix_text=prefix_text,
         )
     else:
         raise ValueError("Unexpected `model_family` found in config.")
