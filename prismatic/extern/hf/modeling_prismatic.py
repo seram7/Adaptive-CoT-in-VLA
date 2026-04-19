@@ -518,9 +518,9 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         scores = outputs.scores
         new_ids = generated_ids[:, input_len:]
 
-        print("new token count:", new_ids.shape[1])
-        print("new ids:", new_ids[0].cpu().tolist())
-        print("action_dim:", self.get_action_dim(unnorm_key))
+        # print("new token count:", new_ids.shape[1])
+        # print("new ids:", new_ids[0].cpu().tolist())
+        # print("action_dim:", self.get_action_dim(unnorm_key))
         
         action_dim = self.get_action_dim(unnorm_key)
         predicted_action_token_ids = new_ids[0, -action_dim-1:-1].cpu().numpy()
