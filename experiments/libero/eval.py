@@ -198,6 +198,12 @@ def compute_step_uncertainty_from_action_scores(
     second_peak_mass = _window_mass(probs, peak2_idx, radius=near_radius)
     second_peak_mass = torch.where(has_peak2, second_peak_mass, torch.zeros_like(second_peak_mass))
     second_peak_mass_x_peak_distance = second_peak_mass * peak_separation
+    
+    # 5)
+    ii = torch.arange(B).unsqueeze(0)                                    # [1, B]
+    dist = (ii - map_idx.unsqueeze(1)).abs().to(probs.dtype)             # [N, B]
+    far_dist = torch.where(dist > far_radius, dist, torch.zeros_like(dist))  # [N, B]
+    dist_entropy = (probs * far_dist).sum(dim=-1)  
 
     return {
         "entropy_per_slot": entropy.numpy(),
@@ -205,12 +211,14 @@ def compute_step_uncertainty_from_action_scores(
         "dist_aware_dispersion_per_slot": dist_aware_dispersion.numpy(),
         "far_mass_x_peak_separation_per_slot": far_mass_x_peak_separation.numpy(),
         "bimodal_u_per_slot": bimodal_u.numpy(),
+        "dist_entropy_per_slot": dist_entropy.numpy(),
         "second_peak_mass_x_peak_distance_per_slot": second_peak_mass_x_peak_distance.numpy(),
         "entropy_mean": float(entropy.mean().item()),
         "top3_mass_mean": float(top3_mass.mean().item()),
         "dist_aware_dispersion_mean": float(dist_aware_dispersion.mean().item()),
         "far_mass_x_peak_separation_mean": float(far_mass_x_peak_separation.mean().item()),
         "bimodal_u_mean": float(bimodal_u.mean().item()),
+        "dist_entropy_mean": float(dist_entropy.mean().item()),
         "second_peak_mass_x_peak_distance_mean": float(second_peak_mass_x_peak_distance.mean().item()),
         "logits_7xV": step_logits,
     }
@@ -251,6 +259,13 @@ def compute_relative_change(series: List[float]) -> float:
     cur = float(series[-1])
     return (cur - prev) / (abs(prev) + 1e-6)
 
+def compute_windowed_avg(series: List[float], window: int = 5) -> float:
+    if series is None or len(series) < window:
+        return 0.0
+    arr = np.asarray(series[-window:], dtype=np.float64)
+    return float(np.nanmean(arr))
+
+
 
 # ---------------------------------------------------------------------------
 # FrozenPromptController
@@ -265,6 +280,7 @@ class FrozenPromptController:
         - "none": always update from latest decoded text
         - "time": fixed-length freezing
         - "metric": use current metric value
+        - "metric_window" : use windowed average of the metric
         - "metric_variance": use relative change of the metric
         - "metric_total_variation": use running total variation of the metric
         - "metric_window_total_variation": use windowed average total variation
@@ -345,6 +361,8 @@ class FrozenPromptController:
             raw_score = 0.0
         elif self.control_mode == "metric":
             raw_score = float(scores[-1])
+        elif self.control_mode == "metric_window":
+            raw_score = compute_windowed_avg(scores, window=self.tv_window)
         elif self.control_mode == "metric_variance":
             raw_score = compute_relative_change(scores)
         elif self.control_mode == "metric_total_variation":
@@ -364,8 +382,9 @@ class FrozenPromptController:
                 f"uncertainty high (score={raw_score:.6f}) -> reset to base"
             )
         else:
-            new_prefix = extract_cached_reasoning_prefix(decoded_text)
-            self._set_prefix(new_prefix, is_update=True)
+            if not self.fixed:
+                new_prefix = extract_cached_reasoning_prefix(decoded_text)
+                self._set_prefix(new_prefix, is_update=True)
             self.fixed = True
             print(
                 f"[{self.metric_name} | {self.control_mode}] "
@@ -409,6 +428,7 @@ def save_rollout_pt(
     far_mass_x_peak_separation_series=None,
     bimodal_u_series=None,
     second_peak_mass_x_peak_distance_series=None,
+    dist_entropy_series=None,
     selected_metric_series=None,
     inference_times=None,
     prefix_stats=None,
@@ -446,6 +466,7 @@ def save_rollout_pt(
             np.asarray(inference_times, dtype=np.float32) if inference_times is not None else None
         ),
         "prefix_stats": prefix_stats if prefix_stats is not None else {},
+        "dist_entropy_series": _to_tensor_or_empty(dist_entropy_series),
     }
 
     pt_path = save_dir / f"task{task_id:02d}_trial{trial_id:02d}.pt"
@@ -473,6 +494,7 @@ def eval_libero_uncertainty(
         - time
         - none
         - metric
+        - metric_window
         - metric_variance
         - metric_total_variation
         - metric_window_total_variation
@@ -484,6 +506,7 @@ def eval_libero_uncertainty(
         - far_mass_x_peak_separation
         - bimodal_u
         - second_peak_mass_x_peak_distance
+        - dist_entropy
     """
 
     checkpoint = f"leepanic/ecot-{dataset.replace('_', '-')}-r32"
@@ -543,7 +566,7 @@ def eval_libero_uncertainty(
         task_episodes, task_successes = 0, 0
         episode_inference_stats = []
 
-        for episode_idx in tqdm(range(num_trials_per_task)):
+        for episode_idx in tqdm(range(10,10+num_trials_per_task)):
             print(f"\nTask: {task_description}")
 
             env.reset()
@@ -591,6 +614,7 @@ def eval_libero_uncertainty(
             bimodal_u_series = []
             second_peak_mass_x_peak_distance_series = []
             selected_metric_series = []
+            dist_entropy_series = []
 
             task_description_slug = task_description.replace(" ", "_")
             if prompt_control_mode == "none":
@@ -668,6 +692,7 @@ def eval_libero_uncertainty(
                     second_peak_mass_x_peak_distance_series.append(
                         action_uncertainty["second_peak_mass_x_peak_distance_mean"]
                     )
+                    dist_entropy_series.append(action_uncertainty["dist_entropy_mean"])
 
                     metric_key = f"{uncertainty_metric_name}_mean"
                     selected_metric_score = float(action_uncertainty[metric_key])
@@ -725,6 +750,7 @@ def eval_libero_uncertainty(
                 selected_metric_series=selected_metric_series,
                 inference_times=inference_times,
                 prefix_stats=prefix_stats,
+                dist_entropy_series=dist_entropy_series,
             )
 
             task_episodes += 1
@@ -793,6 +819,7 @@ if __name__ == "__main__":
             "none",  # ECoT
             "time",  # Freeze prefix prompt for a fixed number of steps after each update
             "metric",
+            "metric_window",
             "metric_variance",
             "metric_total_variation",
             "metric_window_total_variation",
@@ -816,6 +843,7 @@ if __name__ == "__main__":
             "far_mass_x_peak_separation",
             "bimodal_u",
             "second_peak_mass_x_peak_distance",
+            "dist_entropy",
         ],
         help="Which uncertainty metric to use for prompt control",
     )
