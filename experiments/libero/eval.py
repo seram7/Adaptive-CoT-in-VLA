@@ -16,6 +16,8 @@ from libero_utils import UNNORM_KEYS
 import sys
 
 sys.path.insert(0, "/home/seram/ut/project/LIBERO")
+project_root = Path(__file__).parent.parent.parent  # Go up from experiments/libero/ to project root
+sys.path.insert(0, str(project_root))
 from experiments.robot.libero.libero_utils import (
     get_libero_dummy_action,
     get_libero_env,
@@ -198,12 +200,12 @@ def compute_step_uncertainty_from_action_scores(
     second_peak_mass = _window_mass(probs, peak2_idx, radius=near_radius)
     second_peak_mass = torch.where(has_peak2, second_peak_mass, torch.zeros_like(second_peak_mass))
     second_peak_mass_x_peak_distance = second_peak_mass * peak_separation
-    
+
     # 5)
-    ii = torch.arange(B).unsqueeze(0)                                    # [1, B]
-    dist = (ii - map_idx.unsqueeze(1)).abs().to(probs.dtype)             # [N, B]
+    ii = torch.arange(B).unsqueeze(0)  # [1, B]
+    dist = (ii - map_idx.unsqueeze(1)).abs().to(probs.dtype)  # [N, B]
     far_dist = torch.where(dist > far_radius, dist, torch.zeros_like(dist))  # [N, B]
-    dist_entropy = (probs * far_dist).sum(dim=-1)  
+    dist_entropy = (probs * far_dist).sum(dim=-1)
 
     return {
         "entropy_per_slot": entropy.numpy(),
@@ -224,15 +226,6 @@ def compute_step_uncertainty_from_action_scores(
     }
 
 
-def compute_windowed_avg_total_variation(series, window: int = 5) -> float:
-    if series is None or len(series) < 2:
-        return 0.0
-    arr = np.asarray(series[-window:], dtype=np.float64)
-    if len(arr) < 2:
-        return 0.0
-    return float(np.nanmean(np.abs(np.diff(arr))))
-
-
 # ---------------------------------------------------------------------------
 # Metric series utilities
 # ---------------------------------------------------------------------------
@@ -241,12 +234,12 @@ def compute_windowed_avg_total_variation(series, window: int = 5) -> float:
 def compute_running_total_variation(series: List[float]) -> float:
     """
     Running total variation up to the current step:
-        TV_t = sum_{i=1..t} |x_i - x_{i-1}|
+        TV_t = 1/t * sum_{i=1..t} |x_i - x_{i-1}|
     """
     if series is None or len(series) < 2:
         return 0.0
     arr = np.asarray(series, dtype=np.float64)
-    return float(np.abs(np.diff(arr)).sum())
+    return float(np.abs(np.diff(arr)).mean())
 
 
 def compute_relative_change(series: List[float]) -> float:
@@ -259,12 +252,21 @@ def compute_relative_change(series: List[float]) -> float:
     cur = float(series[-1])
     return (cur - prev) / (abs(prev) + 1e-6)
 
+
 def compute_windowed_avg(series: List[float], window: int = 5) -> float:
     if series is None or len(series) < window:
         return 0.0
     arr = np.asarray(series[-window:], dtype=np.float64)
     return float(np.nanmean(arr))
 
+
+def compute_windowed_avg_total_variation(series, window: int = 5) -> float:
+    if series is None or len(series) < 2:
+        return 0.0
+    arr = np.asarray(series[-window:], dtype=np.float64)
+    if len(arr) < 2:
+        return 0.0
+    return float(np.nanmean(np.abs(np.diff(arr))))
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +568,7 @@ def eval_libero_uncertainty(
         task_episodes, task_successes = 0, 0
         episode_inference_stats = []
 
-        for episode_idx in tqdm(range(10,10+num_trials_per_task)):
+        for episode_idx in tqdm(range(num_trials_per_task)):
             print(f"\nTask: {task_description}")
 
             env.reset()
@@ -619,7 +621,7 @@ def eval_libero_uncertainty(
             task_description_slug = task_description.replace(" ", "_")
             if prompt_control_mode == "none":
                 save_dir = f"./rollouts/{task_suite_name}/ECoT_plain/{task_description_slug}/trial{episode_idx:02d}"
-            if prompt_control_mode == "time":
+            elif prompt_control_mode == "time":
                 save_dir = (
                     f"./rollouts/{task_suite_name}/ECoT_frozen{frozen_prompt_max_freezing_time}"
                     f"/{task_description_slug}/trial{episode_idx:02d}"
@@ -758,7 +760,7 @@ def eval_libero_uncertainty(
 
             save_rollout_video(
                 replay_images,
-                total_episodes,
+                episode_idx,
                 success=done,
                 task_description=task_description,
                 save_dir=save_dir,
@@ -766,7 +768,7 @@ def eval_libero_uncertainty(
             save_rollot_reasoning(
                 replay_reasoning,
                 replay_images,
-                total_episodes,
+                episode_idx,
                 success=done,
                 task_description=task_description,
                 save_dir=save_dir,
