@@ -22,7 +22,11 @@ def get_libero_env(task, model_family, resolution=256):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = os.path.join(get_libero_path("bddl_files"), task.problem_folder, task.bddl_file)
-    env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
+    env_args = {
+        "bddl_file_name": task_bddl_file,
+        "camera_heights": resolution,
+        "camera_widths": resolution,
+    }
     env = OffScreenRenderEnv(**env_args)
     env.seed(0)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
     return env, task_description
@@ -61,9 +65,13 @@ def get_libero_image(obs, resize_size):
     return img
 
 
-def save_rollout_video(rollout_images, idx, success, task_description, log_file=None,save_dir="./rollouts"):
+def save_rollout_video(
+    rollout_images, idx, success, task_description, log_file=None, save_dir="./rollouts"
+):
     """Saves an MP4 replay of an episode."""
-    processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
+    processed_task_description = (
+        task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
+    )
     # rollout_dir = f"./rollouts/{DATE}/{processed_task_description}"
     rollout_dir = save_dir
     os.makedirs(rollout_dir, exist_ok=True)
@@ -77,9 +85,20 @@ def save_rollout_video(rollout_images, idx, success, task_description, log_file=
         log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
     return mp4_path
 
-def save_rollot_reasoning(rollout_reasoning, rollout_images, idx, success, task_description, log_file=None, save_dir="./rollouts"):
+
+def save_rollot_reasoning(
+    rollout_reasoning,
+    rollout_images,
+    idx,
+    success,
+    task_description,
+    log_file=None,
+    save_dir="./rollouts",
+):
     """Saves an MP4 replay of an episode."""
-    processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
+    processed_task_description = (
+        task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
+    )
     # rollout_dir = f"./rollouts/{DATE}/{processed_task_description}"
     rollout_dir = save_dir
     mp4_path = f"{rollout_dir}/{DATE_TIME}--episode={idx}--success={success}--task={processed_task_description}/"
@@ -114,15 +133,43 @@ def quat2axisangle(quat):
 
     return (quat[:3] * 2.0 * math.acos(quat[3])) / den
 
-#=======================================================
 
-#Define some utils.
+# =======================================================
+
+
+# Define some utils.
 def draw_reasoning(image, generated_text):
     tags = [f" {tag}" for tag in get_cot_tags_list()]
-    prefix = generated_text.split("PREFIX_START")[-1].split("PREFIX_END")[0] if "PREFIX_START" in generated_text and "PREFIX_END" in generated_text else ""
+    prefix = (
+        generated_text.split("##S##")[-1].split("##E##")[0]
+        if "##S##" in generated_text and "##E##" in generated_text
+        else ""
+    )
+    generated_text = generated_text.replace("##S##", "").replace("##E##", "")
     reasoning = split_reasoning(generated_text, tags)
-    text = [tag + reasoning[tag] for tag in [' TASK:',' PLAN:',' SUBTASK REASONING:',' SUBTASK:',
-                                            ' MOVE REASONING:',' MOVE:', ' VISIBLE OBJECTS:', ' GRIPPER POSITION:'] if tag in reasoning]
+
+    # Parse prefix to find which tags are already included
+    prefix_tags_present = set()
+    if prefix:
+        prefix_reasoning = split_reasoning(prefix, tags)
+        prefix_tags_present = set(prefix_reasoning.keys())
+
+    # Only include tags that are NOT in the prefix
+    text = [
+        tag + reasoning[tag]
+        for tag in [
+            " TASK:",
+            " PLAN:",
+            " SUBTASK REASONING:",
+            " SUBTASK:",
+            " MOVE REASONING:",
+            " MOVE:",
+            " VISIBLE OBJECTS:",
+            " GRIPPER POSITION:",
+        ]
+        if tag in reasoning and tag not in prefix_tags_present
+    ]
+
     metadata = get_metadata(reasoning)
     bboxes = {}
     for k, v in metadata["bboxes"].items():
@@ -131,29 +178,70 @@ def draw_reasoning(image, generated_text):
         bboxes[k.lstrip().rstrip()] = v
 
     caption = ""
-    caption += f"PREFIX: {prefix}\n\n" if prefix != "" else ""
     for t in text:
-        wrapper = textwrap.TextWrapper(width=80, replace_whitespace=False) 
-        word_list = wrapper.wrap(text=t) 
-        caption_new = ''
+        wrapper = textwrap.TextWrapper(width=80, replace_whitespace=False)
+        word_list = wrapper.wrap(text=t)
+        caption_new = ""
         for ii in word_list[:-1]:
-            caption_new = caption_new + ii + '\n      '
+            caption_new = caption_new + ii + "\n      "
         caption_new += word_list[-1]
-
         caption += caption_new.lstrip() + "\n\n"
 
     base = Image.fromarray(np.ones((480, 640, 3), dtype=np.uint8) * 255)
     draw = ImageDraw.Draw(base)
-    font = ImageFont.load_default(size=14) # big text
-    color = (0,0,0) # RGB
-    draw.text((30, 30), caption, color, font=font)
+    font = ImageFont.load_default(size=14)
+    color = (0, 0, 0)  # RGB
+
+    y_offset = 30
+    x_offset = 30
+
+    # Draw prefix in bold (simulated) if it exists
+    if prefix != "":
+        # Split prefix by tags and format with line breaks
+        prefix_reasoning = split_reasoning(prefix, tags)
+        prefix_parts = []
+
+        for tag in [
+            " TASK:",
+            " PLAN:",
+            " SUBTASK REASONING:",
+            " SUBTASK:",
+            " MOVE REASONING:",
+            " MOVE:",
+        ]:
+            if tag in prefix_reasoning:
+                prefix_parts.append(tag + prefix_reasoning[tag])
+
+        # Join with line breaks and wrap each part
+        prefix_formatted = ""
+        for part in prefix_parts:
+            wrapper = textwrap.TextWrapper(width=80, replace_whitespace=False)
+            word_list = wrapper.wrap(text=part)
+            part_formatted = ""
+            for ii in word_list[:-1]:
+                part_formatted = part_formatted + ii + "\n      "
+            part_formatted += word_list[-1]
+            prefix_formatted += part_formatted.lstrip() + "\n\n"
+
+        # Add PREFIX label
+        prefix_text = f"PREFIX:\n{prefix_formatted}"
+
+        # Draw 4 times with slight offsets to simulate bold
+        for dx, dy in [(0, 0), (1, 0), (0, 1), (1, 1)]:
+            draw.text((x_offset + dx, y_offset + dy), prefix_text, color, font=font)
+
+        # Calculate offset for next text
+        bbox = draw.textbbox((x_offset, y_offset), prefix_text, font=font)
+        y_offset = bbox[3] + 5
+
+    # Draw the rest normally (only tags not in prefix)
+    draw.text((x_offset, y_offset), caption, color, font=font)
+
     # rescale image to 480 640 3
-    # image = image.copy()
     pil_image = Image.fromarray(image)
     resized_image = pil_image.resize((640, 480), Image.Resampling.LANCZOS).copy()
     img_arr = np.array(resized_image)
 
-    # img_arr = np.array(image)
     draw_gripper(img_arr, metadata["gripper"])
     draw_bboxes(img_arr, bboxes)
 
@@ -161,6 +249,7 @@ def draw_reasoning(image, generated_text):
     reasoning_img = Image.fromarray(np.concatenate([img_arr, text_arr], axis=1))
 
     return reasoning_img
+
 
 def split_reasoning(text, tags):
     new_parts = {None: text}
@@ -179,6 +268,7 @@ def split_reasoning(text, tags):
                 new_parts[k] = v
 
     return new_parts
+
 
 class CotTag(enum.Enum):
     TASK = "TASK:"
@@ -205,6 +295,7 @@ def get_cot_tags_list():
         CotTag.ACTION.value,
     ]
 
+
 def name_to_random_color(name):
     return [(hash(name) // (256**i)) % 256 for i in range(3)]
 
@@ -215,6 +306,7 @@ def draw_gripper(img, pos_list, img_size=(640, 480)):
         scale = 255 - int(255 * i / len(pos_list))
         cv2.circle(img, pos, 6, (0, 0, 0), -1)
         cv2.circle(img, pos, 5, (scale, scale, 255), -1)
+
 
 # def get_metadata(reasoning):
 #     metadata = {"gripper": [[0, 0]], "bboxes": dict()}
@@ -237,6 +329,7 @@ def draw_gripper(img, pos_list, img_size=(640, 480)):
 
 #     return metadata
 
+
 def get_metadata(reasoning):
     metadata = {"gripper": [[0, 0]], "bboxes": dict()}
 
@@ -247,7 +340,9 @@ def get_metadata(reasoning):
         # Filter and validate integers
         gripper_pos = [x.strip() for x in gripper_pos.split(",") if x.strip().isdigit()]
         gripper_pos = [int(x) for x in gripper_pos]
-        gripper_pos = [(gripper_pos[2 * i], gripper_pos[2 * i + 1]) for i in range(len(gripper_pos) // 2)]
+        gripper_pos = [
+            (gripper_pos[2 * i], gripper_pos[2 * i + 1]) for i in range(len(gripper_pos) // 2)
+        ]
         metadata["gripper"] = gripper_pos
 
     if f" {CotTag.VISIBLE_OBJECTS.value}" in reasoning:
@@ -266,8 +361,10 @@ def get_metadata(reasoning):
 
     return metadata
 
+
 def resize_pos(pos, img_size):
     return [(x * size) // 256 for x, size in zip(pos, img_size)]
+
 
 def draw_bboxes(img, bboxes, img_size=(640, 480)):
     for name, bbox in bboxes.items():
