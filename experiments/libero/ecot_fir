@@ -1,0 +1,33 @@
+#!/bin/bash
+#SBATCH --account=def-bussmann
+#SBATCH --time=4:00:00
+#SBATCH --gres=gpu:nvidia_h100_80gb_hbm3_2g.20gb:1          
+#SBATCH --cpus-per-task=4  
+#SBATCH --mem=32000M    
+#SBATCH --job-name=ecot
+#SBATCH --array=0-49
+#SBATCH --output=./long_ecot/eval_result_%A_%a.out
+#SBATCH --error=./long_ecot/eval_error_%A_%a.err 
+
+MY_TASK_ID=$(( SLURM_ARRAY_TASK_ID / 5 ))
+
+CHUNK_IDX=$(( SLURM_ARRAY_TASK_ID % 5 ))
+
+MY_START_IDX=$(( CHUNK_IDX * 10 ))
+
+echo "Starting job on node: $HOSTNAME"
+echo "Array ID: $SLURM_ARRAY_TASK_ID | Task ID: $MY_TASK_ID | Start Idx: $MY_START_IDX"
+
+module purge
+module load StdEnv/2023 gcc/12.3 cuda/12.2 python/3.10 mujoco/3.1.6 opencv/4.10.0 arrow/15.0.1
+source /home/geunhee/envs/ecot_310/bin/activate
+cd /home/geunhee/scratch/Adaptive-CoT-in-VLA/
+
+export HF_HOME=/home/geunhee/scratch/Adaptive-CoT-in-VLA/hf_cache
+
+python experiments/libero/eval.py \
+    --dataset libero_10 \
+    --num-trials-per-task 10 \
+    --task_id $MY_TASK_ID \
+    --seed 42 \
+    --start_idx $MY_START_IDX
