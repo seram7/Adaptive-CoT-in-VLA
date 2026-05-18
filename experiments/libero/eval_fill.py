@@ -573,6 +573,7 @@ def eval_libero_uncertainty(
     else:
         tasks_to_eval = range(num_tasks_in_suite)
 
+    BASE_DIR = "/home/geunhee/scratch/Adaptive-CoT-in-VLA/"
     for task_id in tqdm(tasks_to_eval, desc="Tasks", unit="task"):
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
@@ -589,27 +590,26 @@ def eval_libero_uncertainty(
             print(f"\nTask: {task_description}")
 
             task_description_slug = task_description.replace(" ", "_")
-            if prompt_control_mode == "none":
-                save_dir = f"./rollouts/{task_suite_name}/ECoT_plain/{task_description_slug}/trial{episode_idx:02d}"
-            elif prompt_control_mode == "time":
+
+            if prompt_control_mode == "time":
                 save_dir = (
-                    f"./rollouts/{task_suite_name}/ECoT_frozen{frozen_prompt_max_freezing_time}"
+                    f"{BASE_DIR}/rollouts/{task_suite_name}/ECoT_frozen{frozen_prompt_max_freezing_time}"
                     f"/{task_description_slug}/trial{episode_idx:02d}"
                 )
+            elif "window" in prompt_control_mode:
+                    save_dir = (
+                        f"{BASE_DIR}/rollouts/{task_suite_name}/{uncertainty_metric_name}_{prompt_control_mode}_{score_threshold}_w{tv_window}"
+                        f"/{task_description_slug}/trial{episode_idx:02d}"
+                    )
             else:
-                if "window" in prompt_control_mode:
-                    save_dir = (
-                        f"./rollouts/{task_suite_name}/{uncertainty_metric_name}_{prompt_control_mode}_{score_threshold}_w{tv_window}"
-                        f"/{task_description_slug}/trial{episode_idx:02d}"
-                    )
-                else:
-                    save_dir = (
-                        f"./rollouts/{task_suite_name}/{uncertainty_metric_name}_{prompt_control_mode}_{score_threshold}"
-                        f"/{task_description_slug}/trial{episode_idx:02d}"
-                    )
+                save_dir = (
+                    f"{BASE_DIR}/rollouts/{task_suite_name}/{uncertainty_metric_name}_{prompt_control_mode}_{score_threshold}"
+                    f"/{task_description_slug}/trial{episode_idx:02d}"
+                )
             
             # 저장될 .pt 파일의 정확한 경로
             expected_pt_path = Path(save_dir) / f"task{task_id:02d}_trial{episode_idx:02d}.pt"
+            print(expected_pt_path)
             
             if expected_pt_path.exists():
                 print(f"-> Skip: {expected_pt_path.name}")
@@ -665,25 +665,6 @@ def eval_libero_uncertainty(
             action_VI_series = []
             action_VI_online_tv_series = []
 
-            task_description_slug = task_description.replace(" ", "_")
-            if prompt_control_mode == "none":
-                save_dir = f"./rollouts/{task_suite_name}/ECoT_plain/{task_description_slug}/trial{episode_idx:02d}"
-            if prompt_control_mode == "time":
-                save_dir = (
-                    f"./rollouts/{task_suite_name}/ECoT_frozen{frozen_prompt_max_freezing_time}"
-                    f"/{task_description_slug}/trial{episode_idx:02d}"
-                )
-            else:
-                if "window" in prompt_control_mode:
-                    save_dir = (
-                        f"./rollouts/{task_suite_name}/{uncertainty_metric_name}_{prompt_control_mode}_{score_threshold}_w{tv_window}"
-                        f"/{task_description_slug}/trial{episode_idx:02d}"
-                    )
-                else:
-                    save_dir = (
-                        f"./rollouts/{task_suite_name}/{uncertainty_metric_name}_{prompt_control_mode}_{score_threshold}"
-                        f"/{task_description_slug}/trial{episode_idx:02d}"
-                    )
             success = 0
             done = False
 
