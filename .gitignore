@@ -158,3 +158,18 @@ qsub_log
 __auto*
 tmp*
 outputs*
+
+# Evaluation artifacts and local model caches
+rollouts/
+logs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.mp4
+*.avi
+*.mov
+*.jsonl
+wandb/
+.cache/

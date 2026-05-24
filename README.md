@@ -309,9 +309,17 @@ Each task is evaluated across 10 trials. At every step, we measure the model's u
 - **CUDA**: 11.8 or higher
 
 ### Setup
-Make sure LIBERO is installed and the path is correctly set in the script:
-```python
-sys.path.insert(0, "/your/path/to/LIBERO")
+Make sure LIBERO is installed before running simulation evaluations:
+```bash
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git
+cd LIBERO
+pip install -e .
+cd ..
+```
+
+If LIBERO is not installed into the active Python environment, point the evaluator to the cloned LIBERO repository explicitly:
+```bash
+export LIBERO_ROOT=/path/to/LIBERO
 ```
 
 ### Run Evaluation
@@ -319,6 +327,52 @@ sys.path.insert(0, "/your/path/to/LIBERO")
 ```bash
 python rollout_ECoT.py
 ```
+
+**Dual-GPU OpenVLA/ECoT router:**
+
+`experiments/libero/eval_dualgpu.py` runs OpenVLA first on one GPU, computes uncertainty from the direct action-token logits, and only calls ECoT on a second GPU when the router marks the step as uncertain. The original adaptive ECoT evaluation path is unchanged.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 python experiments/libero/eval_dualgpu.py \
+  --dataset libero_goal \
+  --openvla-checkpoint openvla/openvla-7b-finetuned-libero-goal \
+  --ecot-checkpoint leepanic/ecot-libero-goal-r32 \
+  --openvla-device cuda:0 \
+  --ecot-device cuda:1 \
+  --uncertainty-metric-name far_mass_x_peak_separation \
+  --router-control-mode metric_window_total_variation \
+  --score-threshold 1.0 \
+  --score-threshold-direction gt \
+  --tv-window 5 \
+  --num-trials-per-task 20 \
+  --seed 42
+```
+
+When `CUDA_VISIBLE_DEVICES=0,1` is set, `cuda:0` and `cuda:1` refer to the two visible GPUs inside the process. LIBERO should be installed with `pip install -e /path/to/LIBERO`; alternatively, set `LIBERO_ROOT=/path/to/LIBERO` before running the script. To use local checkpoint directories instead of downloading from Hugging Face, pass them to `--openvla-checkpoint` and `--ecot-checkpoint`.
+
+If checkpoint args are omitted, the dual-GPU evaluator uses these Hugging Face defaults:
+
+| Dataset | OpenVLA checkpoint | ECoT checkpoint |
+|---|---|---|
+| `libero_spatial` | `openvla/openvla-7b-finetuned-libero-spatial` | `leepanic/ecot-libero-spatial-r32` |
+| `libero_object` | `openvla/openvla-7b-finetuned-libero-object` | `leepanic/ecot-libero-object-r32` |
+| `libero_goal` | `openvla/openvla-7b-finetuned-libero-goal` | `leepanic/ecot-libero-goal-r32` |
+| `libero_10` | `openvla/openvla-7b-finetuned-libero-10` | `leepanic/ecot-libero-10-r32` |
+
+Useful router options:
+- `--router-control-mode metric_window_total_variation` gates on a causal total-variation score over the selected OpenVLA uncertainty metric.
+- `--router-control-mode fixed_interval --fixed-ecot-interval 5` routes every 5th control step to ECoT.
+- `--save-video` saves normal rollout videos.
+- `--save-uncertainty-video` saves rollout videos with the uncertainty trace and ECoT routing decisions.
+- `--skip-existing-rollouts` skips episodes already present in the run directory.
+
+Dual-GPU outputs are saved under:
+
+```text
+rollouts/{dataset}/{run_name}/{task_description}/trialXX/
+```
+
+Each episode can save a `.pt` payload containing OpenVLA logits, uncertainty scores, router decisions, selected actions, policy labels, ECoT reasoning text, and per-step inference times. A run-level `episode_summary.jsonl` stores success, ECoT ratio, mean OpenVLA/ECoT/selected inference time, checkpoint ids, device ids, and router configuration.
 
 
 ### Output
