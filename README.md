@@ -374,6 +374,69 @@ rollouts/{dataset}/{run_name}/{task_description}/trialXX/
 
 Each episode can save a `.pt` payload containing OpenVLA logits, uncertainty scores, router decisions, selected actions, policy labels, ECoT reasoning text, and per-step inference times. A run-level `episode_summary.jsonl` stores success, ECoT ratio, mean OpenVLA/ECoT/selected inference time, checkpoint ids, device ids, and router configuration.
 
+**Dual-process OpenVLA/DeepThinkVLA router for standard LIBERO:**
+
+`experiments/libero/eval_openvla_deepthink_dual.py` uses OpenVLA as the direct policy and routes uncertain control steps to DeepThinkVLA. This evaluator is for the four standard LIBERO suites only: `libero_spatial`, `libero_object`, `libero_goal`, and `libero_10`, using standard task IDs and trial IDs directly.
+
+DeepThinkVLA has its own dependency stack, so the evaluator launches it as a JSONL worker process. Clone and install DeepThinkVLA separately:
+
+```bash
+git clone https://github.com/OpenBMB/DeepThinkVLA.git
+cd DeepThinkVLA
+conda create -n deepthinkvla python=3.10 -y
+conda activate deepthinkvla
+pip install -r requirements.txt
+cd ..
+```
+
+Then point the router to both LIBERO and DeepThinkVLA:
+
+```bash
+export LIBERO_ROOT=/path/to/LIBERO
+export DEEPTHINKVLA_REPO_ROOT=/path/to/DeepThinkVLA
+export DEEPTHINKVLA_PYTHON=/path/to/miniconda3/envs/deepthinkvla/bin/python
+```
+
+Example on standard `libero_10`, with OpenVLA on physical GPU 0 and DeepThinkVLA on physical GPU 1:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 MUJOCO_GL=osmesa \
+python experiments/libero/eval_openvla_deepthink_dual.py \
+  --dataset libero_10 \
+  --num-trials-per-task 20 \
+  --openvla-device cuda:0 \
+  --deepthink-cuda-visible-devices 1 \
+  --deepthink-device cuda:0 \
+  --router-control-mode metric_window_total_variation \
+  --uncertainty-metric-name far_mass_x_peak_separation \
+  --score-threshold-direction gt \
+  --tv-window 5 \
+  --deepthink-execute-chunk-steps 10 \
+  --seed 42
+```
+
+If `--score-threshold` is omitted, the evaluator uses these suite defaults:
+
+| Dataset | Default threshold |
+|---|---:|
+| `libero_spatial` | `1.05` |
+| `libero_object` | `1.21` |
+| `libero_goal` | `0.79` |
+| `libero_10` | `0.93` |
+
+Useful DeepThinkVLA options:
+- `--deepthink-checkpoint` defaults to `yinchenghust/deepthinkvla_libero_cot_sft`; pass a local checkpoint path to run fully offline.
+- `--deepthink-execute-chunk-steps` controls how many returned DeepThinkVLA chunk actions may be consumed before the next DeepThink request. OpenVLA still computes uncertainty every environment step, and the router can return to OpenVLA when the step becomes certain.
+- `--deepthink-masked-cot` calls DeepThinkVLA's masked-CoT action path when available in the cloned DeepThinkVLA repository.
+
+OpenVLA/DeepThinkVLA outputs are saved under:
+
+```text
+rollouts/openvla_deepthink_dual/{dataset}/{run_name}/{task_description}/trialXX/
+```
+
+The run-level `episode_summary.jsonl` stores success, step count, mean OpenVLA metric, mean control score, timing, and `deepthink_ratio`. Here `deepthink_ratio` means the fraction of executed environment steps whose selected action came from DeepThinkVLA, not the fraction of model calls.
+
 
 ### Output
 Results are saved under `./rollouts/{date}/{task_description}/`:
