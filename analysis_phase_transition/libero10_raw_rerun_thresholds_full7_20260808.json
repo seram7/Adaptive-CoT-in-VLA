@@ -1,0 +1,67 @@
+{
+  "source": "rollouts_logcontrast/libero_10/openvla_deepthink_far_mass_x_peak_separation_farmass_log_contrast_targetcot0p2_h1p05_lo0p35_a3_b10_sustain_chunk1_50ep",
+  "num_pt": 500,
+  "num_steps": 175530,
+  "thresholds": [
+    {
+      "condition": "far_mass_raw_top",
+      "target": 0.2,
+      "threshold": 0.28307847485557747,
+      "estimated_rate": 0.2
+    },
+    {
+      "condition": "far_mass_raw_bottom",
+      "target": 0.2,
+      "threshold": 0.00032086659796348255,
+      "estimated_rate": 0.2
+    },
+    {
+      "condition": "far_mass_raw_top",
+      "target": 0.4,
+      "threshold": 0.06501395766817243,
+      "estimated_rate": 0.4
+    },
+    {
+      "condition": "far_mass_raw_bottom",
+      "target": 0.4,
+      "threshold": 0.010167022096037029,
+      "estimated_rate": 0.4
+    },
+    {
+      "condition": "far_mass_raw_top",
+      "target": 0.6,
+      "threshold": 0.010167022096037029,
+      "estimated_rate": 0.6
+    },
+    {
+      "condition": "far_mass_raw_bottom",
+      "target": 0.6,
+      "threshold": 0.06501395766817243,
+      "estimated_rate": 0.6
+    },
+    {
+      "condition": "far_mass_raw_top",
+      "target": 0.8,
+      "threshold": 0.0003208665979634825,
+      "estimated_rate": 0.8
+    },
+    {
+      "condition": "far_mass_raw_bottom",
+      "target": 0.8,
+      "threshold": 0.28307847485557747,
+      "estimated_rate": 0.8
+    },
+    {
+      "condition": "far_mass_raw_top",
+      "target": 1.0,
+      "threshold": -5e-324,
+      "estimated_rate": 1.0
+    },
+    {
+      "condition": "far_mass_raw_bottom",
+      "target": 1.0,
+      "threshold": 30.15245685750727,
+      "estimated_rate": 1.0
+    }
+  ]
+}

@@ -20,7 +20,19 @@ from typing import Any, Optional
 os.environ.setdefault("TF_FORCE_GPU_ALLOW_GROWTH", "true")
 
 import numpy as np
+import torch
 from tqdm import tqdm
+
+_orig_torch_load = torch.load
+
+
+def _torch_load_compat(*args, **kwargs):
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _orig_torch_load(*args, **kwargs)
+
+
+torch.load = _torch_load_compat
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -36,6 +48,7 @@ from experiments.libero.eval_dualgpu import (  # noqa: E402
     threshold_direction_to_uncertain,
     validate_local_checkpoint,
 )
+from experiments.libero.router_triggers import FarmassLogContrastTrigger  # noqa: E402
 from experiments.robot.libero.libero_utils import (  # noqa: E402
     get_libero_dummy_action,
     get_libero_env,
@@ -84,6 +97,21 @@ def slugify(text: str) -> str:
     return text.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:90]
 
 
+def extract_cached_reasoning_prefix(decoded_text: str) -> str:
+    """Extract a reusable reasoning prefix for logging/cache introspection."""
+
+    text = str(decoded_text or "")
+    if "</think>" in text:
+        return text.split("</think>", 1)[0] + "</think>"
+    if "<action>" in text:
+        return text.split("<action>", 1)[0] + "<action>"
+    if " MOVE REASONING: " in text:
+        return text.split(" MOVE REASONING: ", 1)[0] + " MOVE REASONING: "
+    if " GRIPPER POSITION: " in text:
+        return text.split(" GRIPPER POSITION: ", 1)[0] + " GRIPPER POSITION: "
+    return ""
+
+
 def build_save_dir(
     output_root: Path,
     dataset: str,
@@ -103,6 +131,18 @@ def run_name_for(args) -> str:
     )
     if args.router_control_mode == "fixed_interval":
         suffix = f"fixed{args.fixed_deepthink_interval}"
+    elif args.router_control_mode == "random":
+        suffix = f"random_p{args.random_deepthink_probability}"
+    elif args.router_control_mode == "farmass_log_contrast":
+        suffix = (
+            "far_mass_x_peak_separation_farmass_log_contrast"
+            f"_h{args.h_hi}_lo{args.h_lo}"
+            f"_a{args.short_window}_b{args.long_window}_{args.trigger_mode}"
+        )
+        if args.trigger_mode == "refire":
+            suffix += f"_max{args.refire_max_fires}_int{args.refire_interval}"
+            if args.refire_min_score is not None:
+                suffix += f"_mid{args.refire_min_score}"
     elif "window" in args.router_control_mode:
         suffix = f"{args.uncertainty_metric_name}_{args.router_control_mode}_{threshold_suffix}_w{args.tv_window}"
     else:
@@ -143,6 +183,80 @@ def save_reasoning_jsonl(episode_dir: Path, records: list[dict[str, Any]]) -> Pa
         for row in records:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return path
+
+
+def save_deepthink_rollout_pt(
+    episode_dir: Path,
+    task_name: str,
+    task_id: int,
+    trial_id: int,
+    success: int,
+    step_ids: list[int],
+    selected_metric_series: list[float],
+    farmass_log_m_series: list[float],
+    farmass_log_z_series: list[float],
+    farmass_log_s_series: list[float],
+    farmass_log_conflicted_series: list[float],
+    farmass_log_fired_series: list[float],
+    control_score_series: list[float],
+    uncertain_decision_series: list[float],
+    used_deepthink_series: list[float],
+    openvla_inference_times: list[float],
+    deepthink_inference_times: list[float],
+    selected_inference_times: list[float],
+    ee_positions: list[np.ndarray],
+    proprio_states: list[np.ndarray],
+    far_mass_per_slot_series: list[np.ndarray],
+    peak_separation_per_slot_series: list[np.ndarray],
+    far_mass_x_peak_separation_per_slot_series: list[np.ndarray],
+    openvla_actions: list[np.ndarray],
+    deepthink_actions: list[np.ndarray],
+    executed_actions: list[np.ndarray],
+    selected_policy_series: list[str],
+    reasoning_records: list[dict[str, Any]],
+    router_config: dict[str, Any],
+) -> Path:
+    episode_dir.mkdir(parents=True, exist_ok=True)
+
+    def _array(values, dtype=np.float32):
+        if values is None or len(values) == 0:
+            return np.empty((0,), dtype=dtype)
+        return np.asarray(values, dtype=dtype)
+
+    payload = {
+        "task_name": str(task_name),
+        "task_id": int(task_id),
+        "trial_id": int(trial_id),
+        "success": int(success),
+        "step_ids": _array(step_ids, dtype=np.int32),
+        "openvla_metric_series": _array(selected_metric_series),
+        "selected_metric_series": _array(selected_metric_series),
+        "farmass_log_m_series": _array(farmass_log_m_series),
+        "farmass_log_z_series": _array(farmass_log_z_series),
+        "farmass_log_s_series": _array(farmass_log_s_series),
+        "farmass_log_conflicted_series": _array(farmass_log_conflicted_series),
+        "farmass_log_fired_series": _array(farmass_log_fired_series),
+        "control_score_series": _array(control_score_series),
+        "uncertain_decision_series": _array(uncertain_decision_series),
+        "used_deepthink_series": _array(used_deepthink_series),
+        "openvla_inference_times": _array(openvla_inference_times),
+        "deepthink_inference_times": _array(deepthink_inference_times),
+        "selected_inference_times": _array(selected_inference_times),
+        "ee_positions": _array(ee_positions),
+        "proprio_states": _array(proprio_states),
+        "far_mass_per_slot_series": _array(far_mass_per_slot_series),
+        "peak_separation_per_slot_series": _array(peak_separation_per_slot_series),
+        "far_mass_x_peak_separation_per_slot_series": _array(far_mass_x_peak_separation_per_slot_series),
+        "openvla_actions": _array(openvla_actions),
+        "deepthink_actions": _array(deepthink_actions),
+        "executed_actions": _array(executed_actions),
+        "selected_policy_series": list(selected_policy_series),
+        "deepthink_reasoning_records": list(reasoning_records),
+        "router_config": dict(router_config),
+    }
+    pt_path = episode_dir / f"task{task_id:02d}_trial{trial_id:02d}.pt"
+    torch.save(payload, pt_path)
+    return pt_path
 
 
 def mean_or_none(values) -> Optional[float]:
@@ -336,6 +450,18 @@ def eval_openvla_deepthink(args) -> None:
         raise ValueError(f"Unsupported dataset: {dataset}")
     if args.router_control_mode == "fixed_interval" and args.fixed_deepthink_interval <= 0:
         raise ValueError("--fixed-deepthink-interval must be positive")
+    if args.router_control_mode == "random" and not 0.0 <= args.random_deepthink_probability <= 1.0:
+        raise ValueError("--random-deepthink-probability must be in [0, 1]")
+    if args.router_control_mode == "farmass_log_contrast":
+        if args.long_window <= args.short_window:
+            raise ValueError("--long-window must be larger than --short-window")
+        if args.h_lo >= args.h_hi:
+            raise ValueError("--h-lo must be lower than --h-hi")
+        if args.trigger_mode == "refire":
+            if args.refire_max_fires < 1:
+                raise ValueError("--refire-max-fires must be at least 1")
+            if args.refire_interval <= 0:
+                raise ValueError("--refire-interval must be positive")
     if args.score_threshold is None:
         args.score_threshold = DEFAULT_SUITE_THRESHOLDS[dataset]
 
@@ -366,6 +492,19 @@ def eval_openvla_deepthink(args) -> None:
         f"Router: metric={args.uncertainty_metric_name}, mode={args.router_control_mode}, "
         f"threshold={args.score_threshold}, uncertain_when=score {threshold_operator} threshold"
     )
+    if args.router_control_mode == "farmass_log_contrast":
+        refire_min_score = (
+            args.refire_min_score
+            if args.refire_min_score is not None
+            else 0.5 * (float(args.h_hi) + float(args.h_lo))
+        )
+        print(
+            "Farmass log contrast: "
+            f"short={args.short_window}, long={args.long_window}, "
+            f"h_hi={args.h_hi}, h_lo={args.h_lo}, trigger_mode={args.trigger_mode}, "
+            f"refire_max_fires={args.refire_max_fires}, "
+            f"refire_interval={args.refire_interval}, refire_min_score={refire_min_score}"
+        )
     openvla_worker = OpenVLAWorker(
         checkpoint=openvla_checkpoint,
         dataset=dataset,
@@ -394,6 +533,17 @@ def eval_openvla_deepthink(args) -> None:
         "high_score_means_uncertain": bool(high_score_means_uncertain),
         "tv_window": int(args.tv_window),
         "fixed_deepthink_interval": int(args.fixed_deepthink_interval),
+        "random_deepthink_probability": float(args.random_deepthink_probability),
+        "short_window": int(args.short_window),
+        "long_window": int(args.long_window),
+        "h_hi": float(args.h_hi),
+        "h_lo": float(args.h_lo),
+        "trigger_mode": str(args.trigger_mode),
+        "refire_max_fires": int(args.refire_max_fires),
+        "refire_interval": int(args.refire_interval),
+        "refire_min_score": (
+            None if args.refire_min_score is None else float(args.refire_min_score)
+        ),
         "deepthink_max_new_tokens": int(args.deepthink_max_new_tokens),
         "deepthink_masked_cot": bool(args.deepthink_masked_cot),
         "deepthink_execute_chunk_steps": int(args.deepthink_execute_chunk_steps),
@@ -450,10 +600,20 @@ def eval_openvla_deepthink(args) -> None:
                     control_score_series = []
                     uncertain_decision_series = []
                     used_deepthink_series = []
+                    farmass_log_m_series = []
+                    farmass_log_z_series = []
+                    farmass_log_s_series = []
+                    farmass_log_conflicted_series = []
+                    farmass_log_fired_series = []
                     openvla_inference_times = []
                     deepthink_inference_times = []
                     selected_inference_times = []
                     selected_policy_series = []
+                    ee_positions = []
+                    proprio_states = []
+                    far_mass_per_slot_series = []
+                    peak_separation_per_slot_series = []
+                    far_mass_x_peak_separation_per_slot_series = []
                     openvla_actions = []
                     deepthink_actions = []
                     executed_actions = []
@@ -462,6 +622,21 @@ def eval_openvla_deepthink(args) -> None:
                     first_deepthink_request = True
                     deepthink_queue: list[np.ndarray] = []
                     deepthink_reasoning = ""
+                    cached_reasoning_prefix = ""
+                    farmass_trigger = FarmassLogContrastTrigger(
+                        short_window=args.short_window,
+                        long_window=args.long_window,
+                        h_hi=args.h_hi,
+                        h_lo=args.h_lo,
+                        refire_max_fires=(
+                            args.refire_max_fires if args.trigger_mode == "refire" else 1
+                        ),
+                        refire_interval=args.refire_interval,
+                        refire_min_score=args.refire_min_score,
+                    )
+                    episode_rng = np.random.default_rng(
+                        int(args.seed) + int(task_id) * 100_000 + int(trial_id)
+                    )
                     t = 0
                     done = False
 
@@ -486,6 +661,8 @@ def eval_openvla_deepthink(args) -> None:
                                     )
                                 ),
                             }
+                            ee_positions.append(np.asarray(obs["robot0_eef_pos"], dtype=np.float32))
+                            proprio_states.append(np.asarray(observation["state"], dtype=np.float32))
                             openvla_out = openvla_worker.infer(observation, task_description)
                             openvla_inference_times.append(openvla_out.inference_time)
 
@@ -493,12 +670,53 @@ def eval_openvla_deepthink(args) -> None:
                                 openvla_out.action_scores
                             )
                             metric_key = f"{args.uncertainty_metric_name}_mean"
-                            selected_metric_score = float(action_uncertainty[metric_key])
+                            farmass_slots = np.asarray(
+                                action_uncertainty["far_mass_x_peak_separation_per_slot"],
+                                dtype=np.float64,
+                            )
+                            far_mass_per_slot_series.append(
+                                np.asarray(action_uncertainty["far_mass_per_slot"], dtype=np.float32)
+                            )
+                            peak_separation_per_slot_series.append(
+                                np.asarray(action_uncertainty["peak_separation_per_slot"], dtype=np.float32)
+                            )
+                            far_mass_x_peak_separation_per_slot_series.append(
+                                np.asarray(
+                                    action_uncertainty["far_mass_x_peak_separation_per_slot"],
+                                    dtype=np.float32,
+                                )
+                            )
+                            farmass_arm_m = float(np.nanmean(farmass_slots[:6]))
+                            if args.router_control_mode == "farmass_log_contrast":
+                                selected_metric_score = farmass_arm_m
+                            else:
+                                selected_metric_score = float(action_uncertainty[metric_key])
                             selected_metric_series.append(selected_metric_score)
-                            if args.router_control_mode == "fixed_interval":
+                            farmass_log_m_series.append(farmass_arm_m)
+
+                            log_z = 0.0
+                            log_s = 0.0
+                            log_conflicted = False
+                            log_fired = False
+                            force_new_deepthink_request = False
+                            if args.router_control_mode == "farmass_log_contrast":
+                                log_z, log_s, log_conflicted, log_fired = farmass_trigger.update(
+                                    farmass_log_m_series
+                                )
+                                control_score = float(log_s)
+                                if args.trigger_mode == "sustain":
+                                    is_uncertain = bool(log_conflicted)
+                                    force_new_deepthink_request = bool(log_conflicted)
+                                else:
+                                    is_uncertain = bool(log_fired or (log_conflicted and deepthink_queue))
+                                    force_new_deepthink_request = bool(log_fired)
+                            elif args.router_control_mode == "fixed_interval":
                                 control_step_idx = len(step_ids)
                                 is_uncertain = control_step_idx % args.fixed_deepthink_interval == 0
                                 control_score = float(is_uncertain)
+                            elif args.router_control_mode == "random":
+                                control_score = float(episode_rng.random())
+                                is_uncertain = control_score < args.random_deepthink_probability
                             else:
                                 control_score = compute_control_score(
                                     args.router_control_mode,
@@ -509,12 +727,21 @@ def eval_openvla_deepthink(args) -> None:
                                     is_uncertain = control_score > args.score_threshold
                                 else:
                                     is_uncertain = control_score < args.score_threshold
+                            farmass_log_z_series.append(float(log_z))
+                            farmass_log_s_series.append(float(log_s))
+                            farmass_log_conflicted_series.append(float(log_conflicted))
+                            farmass_log_fired_series.append(float(log_fired))
                             control_score_series.append(float(control_score))
                             uncertain_decision_series.append(float(is_uncertain))
 
                             deepthink_time = 0.0
                             if is_uncertain:
-                                if not deepthink_queue:
+                                if (
+                                    args.router_control_mode == "farmass_log_contrast"
+                                    and args.trigger_mode == "sustain"
+                                ):
+                                    deepthink_queue = []
+                                if force_new_deepthink_request or not deepthink_queue:
                                     deep_obs = deepthink_observation_from_obs(obs, args.deepthink_image_size)
                                     npz_path = write_npz(tmp_dir, eval_label, t, deep_obs)
                                     try:
@@ -535,6 +762,7 @@ def eval_openvla_deepthink(args) -> None:
                                     deepthink_queue = [a.copy() for a in chunk[:chunk_len]]
                                     deepthink_time = float(deepthink_resp.get("inference_time", 0.0))
                                     deepthink_reasoning = str(deepthink_resp.get("reasoning", ""))
+                                    cached_reasoning_prefix = extract_cached_reasoning_prefix(deepthink_reasoning)
                                     reasoning_records.append(
                                         {
                                             "step": t,
@@ -542,26 +770,58 @@ def eval_openvla_deepthink(args) -> None:
                                             "trial_id": trial_id,
                                             "metric_score": selected_metric_score,
                                             "control_score": control_score,
+                                            "farmass_log_m": farmass_arm_m,
+                                            "farmass_log_z": log_z,
+                                            "farmass_log_s": log_s,
+                                            "conflicted": log_conflicted,
+                                            "fired": log_fired,
+                                            "cached_reasoning_prefix": cached_reasoning_prefix,
                                             "reasoning": deepthink_reasoning,
                                         }
                                     )
                                 action = deepthink_queue.pop(0)
                                 selected_policy = "deepthink"
                                 selected_time = openvla_out.inference_time + deepthink_time
-                                print(
-                                    f"[router] uncertain score={control_score:.6f} "
-                                    f"{threshold_operator} {args.score_threshold:.6f} -> DeepThinkVLA"
-                                )
+                                if args.router_control_mode == "random":
+                                    print(
+                                        f"[router] random draw={control_score:.6f} "
+                                        f"< p={args.random_deepthink_probability:.6f} -> DeepThinkVLA"
+                                    )
+                                elif args.router_control_mode == "farmass_log_contrast":
+                                    print(
+                                        f"[router] farmass_log_contrast s={control_score:.6f}, "
+                                        f"conflicted={log_conflicted}, fired={log_fired}, "
+                                        f"mode={args.trigger_mode} -> DeepThinkVLA"
+                                    )
+                                else:
+                                    print(
+                                        f"[router] uncertain score={control_score:.6f} "
+                                        f"{threshold_operator} {args.score_threshold:.6f} -> DeepThinkVLA"
+                                    )
                             else:
-                                deepthink_queue = []
-                                deepthink_reasoning = ""
+                                if args.router_control_mode != "farmass_log_contrast":
+                                    deepthink_queue = []
+                                    deepthink_reasoning = ""
+                                    cached_reasoning_prefix = ""
                                 action = prepare_openvla_action(openvla_out.action)
                                 selected_policy = "openvla"
                                 selected_time = openvla_out.inference_time
-                                print(
-                                    f"[router] certain score={control_score:.6f}, "
-                                    f"threshold={args.score_threshold:.6f} -> OpenVLA"
-                                )
+                                if args.router_control_mode == "random":
+                                    print(
+                                        f"[router] random draw={control_score:.6f} "
+                                        f">= p={args.random_deepthink_probability:.6f} -> OpenVLA"
+                                    )
+                                elif args.router_control_mode == "farmass_log_contrast":
+                                    print(
+                                        f"[router] farmass_log_contrast s={control_score:.6f}, "
+                                        f"conflicted={log_conflicted}, fired={log_fired}, "
+                                        f"mode={args.trigger_mode} -> OpenVLA"
+                                    )
+                                else:
+                                    print(
+                                        f"[router] certain score={control_score:.6f}, "
+                                        f"threshold={args.score_threshold:.6f} -> OpenVLA"
+                                    )
 
                             step_ids.append(t)
                             used_deepthink_series.append(float(selected_policy == "deepthink"))
@@ -599,7 +859,9 @@ def eval_openvla_deepthink(args) -> None:
                         "error": episode_error,
                         "num_steps": int(len(step_ids)),
                         "deepthink_ratio": mean_or_none(used_deepthink_series),
+                        "cot_ratio": mean_or_none(used_deepthink_series),
                         "num_deepthink_steps": int(np.sum(used_deepthink_series)) if used_deepthink_series else 0,
+                        "num_fires": int(np.sum(farmass_log_fired_series)) if farmass_log_fired_series else 0,
                         "mean_openvla_metric": mean_or_none(selected_metric_series),
                         "mean_control_score": mean_or_none(control_score_series),
                         "mean_openvla_inference_time": mean_or_none(openvla_inference_times),
@@ -614,6 +876,38 @@ def eval_openvla_deepthink(args) -> None:
                     }
                     append_summary(run_root, row)
 
+                    if args.save_rollout_pt:
+                        save_deepthink_rollout_pt(
+                            episode_dir=save_dir,
+                            task_name=task_slug,
+                            task_id=task_id,
+                            trial_id=trial_id,
+                            success=success,
+                            step_ids=step_ids,
+                            selected_metric_series=selected_metric_series,
+                            farmass_log_m_series=farmass_log_m_series,
+                            farmass_log_z_series=farmass_log_z_series,
+                            farmass_log_s_series=farmass_log_s_series,
+                            farmass_log_conflicted_series=farmass_log_conflicted_series,
+                            farmass_log_fired_series=farmass_log_fired_series,
+                            control_score_series=control_score_series,
+                            uncertain_decision_series=uncertain_decision_series,
+                            used_deepthink_series=used_deepthink_series,
+                            openvla_inference_times=openvla_inference_times,
+                            deepthink_inference_times=deepthink_inference_times,
+                            selected_inference_times=selected_inference_times,
+                            ee_positions=ee_positions,
+                            proprio_states=proprio_states,
+                            far_mass_per_slot_series=far_mass_per_slot_series,
+                            peak_separation_per_slot_series=peak_separation_per_slot_series,
+                            far_mass_x_peak_separation_per_slot_series=far_mass_x_peak_separation_per_slot_series,
+                            openvla_actions=openvla_actions,
+                            deepthink_actions=deepthink_actions,
+                            executed_actions=executed_actions,
+                            selected_policy_series=selected_policy_series,
+                            reasoning_records=reasoning_records,
+                            router_config=router_config,
+                        )
                     if args.save_reasoning and reasoning_records:
                         save_reasoning_jsonl(save_dir, reasoning_records)
                     if args.save_video and replay_images:
@@ -676,6 +970,8 @@ def main() -> None:
 
     parser.add_argument(
         "--router-control-mode",
+        "--control-mode",
+        dest="router_control_mode",
         default="metric_window_total_variation",
         choices=[
             "metric",
@@ -684,6 +980,8 @@ def main() -> None:
             "metric_total_variation",
             "metric_window_total_variation",
             "fixed_interval",
+            "random",
+            "farmass_log_contrast",
         ],
     )
     parser.add_argument(
@@ -708,6 +1006,26 @@ def main() -> None:
     parser.add_argument("--score-threshold-direction", default="gt", choices=["auto", "gt", "lt"])
     parser.add_argument("--tv-window", type=int, default=5)
     parser.add_argument("--fixed-deepthink-interval", type=int, default=5)
+    parser.add_argument("--random-deepthink-probability", type=float, default=0.5)
+    parser.add_argument("--short-window", type=int, default=3)
+    parser.add_argument("--long-window", type=int, default=10)
+    parser.add_argument("--h-hi", type=float, default=1.5)
+    parser.add_argument("--h-lo", type=float, default=0.5)
+    parser.add_argument("--trigger-mode", default="onset", choices=["onset", "sustain", "refire"])
+    parser.add_argument("--refire-max-fires", type=int, default=1)
+    parser.add_argument("--refire-interval", type=int, default=5)
+    parser.add_argument(
+        "--refire-min-score",
+        type=float,
+        default=None,
+        help="Minimum s_t required for conflicted-state refires; defaults to (h_hi + h_lo) / 2.",
+    )
+    parser.add_argument(
+        "--save-rollout-pt",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Save per-episode .pt files with trigger traces and actions.",
+    )
 
     args = parser.parse_args()
     eval_openvla_deepthink(args)
