@@ -1,0 +1,1088 @@
+diff --git a/envs/_base_task.py b/envs/_base_task.py
+index 982e6ec..650096c 100644
+--- a/envs/_base_task.py
++++ b/envs/_base_task.py
+@@ -39,7 +39,7 @@ class Base_Task(gym.Env):
+         pass
+ 
+     # =========================================================== Init Task Env ===========================================================
+-    def _init_task_env_(self, table_xy_bias=[0, 0], table_height_bias=0, **kwags):
++    def _init_task_env_(self, table_xy_bias=(0, 0), table_height_bias=0, **kwags):
+         """
+         Initialization TODO
+         - `self.FRAME_IDX`: The index of the file saved for the current scene.
+@@ -268,8 +268,9 @@ class Base_Task(gym.Env):
+                 y=kwargs.get("camera_rpy_y", 2.45),
+             )
+ 
+-    def create_table_and_wall(self, table_xy_bias=[0, 0], table_height=0.74):
+-        self.table_xy_bias = table_xy_bias
++    def create_table_and_wall(self, table_xy_bias=(0, 0), table_height=0.74):
++        # Keep per-environment bounds isolated from caller/default state.
++        self.table_xy_bias = list(table_xy_bias)
+         wall_texture, table_texture = None, None
+         table_height += self.table_z_bias
+ 
+@@ -314,9 +315,21 @@ class Base_Task(gym.Env):
+             texture_id=self.table_texture,
+         )
+ 
+-    def get_cluttered_table(self, cluttered_numbers=10, xlim=[-0.59, 0.59], ylim=[-0.34, 0.34], zlim=[0.741]):
++    def get_cluttered_table(
++        self,
++        cluttered_numbers=10,
++        xlim=(-0.59, 0.59),
++        ylim=(-0.34, 0.34),
++        zlim=(0.741,),
++    ):
+         self.record_cluttered_objects = []  # record cluttered objects
+ 
++        # Never mutate reusable defaults or caller-owned bounds. Tasks with a
++        # non-zero table bias call this repeatedly while scanning/replaying
++        # seeds, so an in-place shift makes an identical seed a new scene.
++        xlim = list(xlim)
++        ylim = list(ylim)
++        zlim = list(zlim)
+         xlim[0] += self.table_xy_bias[0]
+         xlim[1] += self.table_xy_bias[0]
+         ylim[0] += self.table_xy_bias[1]
+@@ -1200,6 +1213,12 @@ class Base_Task(gym.Env):
+             target_dis=grasp_dis,
+             contact_point_id=contact_point_id,
+         )
++        # No collision-free grasp pose is a normal infeasible-seed outcome.
++        # Propagate it through plan_success instead of constructing a move
++        # Action with target_pose=None, which raises and aborts seed scanning.
++        if pre_grasp_pose is None or grasp_pose is None:
++            self.plan_success = False
++            return arm_tag, []
+         if pre_grasp_pose == grasp_pose:
+             return arm_tag, [
+                 Action(arm_tag, "move", target_pose=pre_grasp_pose),
+diff --git a/envs/open_laptop.py b/envs/open_laptop.py
+index 3a1f187..d90dc1a 100644
+--- a/envs/open_laptop.py
++++ b/envs/open_laptop.py
+@@ -8,6 +8,13 @@ class open_laptop(Base_Task):
+ 
+     def setup_demo(self, is_test=False, **kwags):
+         super()._init_task_env_(**kwags)
++        # Policy evaluation does not call play_once(), but check_success() is
++        # invoked from the very first action and needs the selected arm.
++        self.arm_tag = self._select_arm()
++
++    def _select_arm(self):
++        face_prod = get_face_prod(self.laptop.get_pose().q, [1, 0, 0], [1, 0, 0])
++        return ArmTag("left" if face_prod > 0 else "right")
+ 
+     def load_actors(self):
+         self.model_name = "015_laptop"
+@@ -30,9 +37,7 @@ class open_laptop(Base_Task):
+         self.add_prohibit_area(self.laptop, padding=0.1)
+ 
+     def play_once(self):
+-        face_prod = get_face_prod(self.laptop.get_pose().q, [1, 0, 0], [1, 0, 0])
+-        arm_tag = ArmTag("left" if face_prod > 0 else "right")
+-        self.arm_tag = arm_tag
++        arm_tag = self.arm_tag
+ 
+         # Grasp the laptop
+         self.move(self.grasp_actor(self.laptop, arm_tag=arm_tag, pre_grasp_dis=0.08, contact_point_id=0))
+diff --git a/envs/put_bottles_dustbin.py b/envs/put_bottles_dustbin.py
+index bb26da0..78d0fd1 100644
+--- a/envs/put_bottles_dustbin.py
++++ b/envs/put_bottles_dustbin.py
+@@ -6,6 +6,21 @@ from copy import deepcopy
+ 
+ class put_bottles_dustbin(Base_Task):
+ 
++    def _shift_grasp_height(self, grasp_actions, delta_z):
++        """Shift every move in a grasp sequence, or mark the plan infeasible."""
++        if grasp_actions is None or len(grasp_actions) != 2 or not grasp_actions[1]:
++            self.plan_success = False
++            return grasp_actions
++
++        moved = False
++        for action in grasp_actions[1]:
++            if action.action == "move":
++                action.target_pose[2] += delta_z
++                moved = True
++        if not moved:
++            self.plan_success = False
++        return grasp_actions
++
+     def setup_demo(self, **kwags):
+         super()._init_task_env_(table_xy_bias=[0.3, 0], **kwags)
+ 
+@@ -94,8 +109,9 @@ class put_bottles_dustbin(Base_Task):
+             else:
+                 # Grasp the bottle with right arm while moving left arm to origin
+                 right_action = self.grasp_actor(bottle, arm_tag=arm_tag, pre_grasp_dis=0.1)
+-                right_action[1][0].target_pose[2] += delta_dis
+-                right_action[1][1].target_pose[2] += delta_dis
++                self._shift_grasp_height(right_action, delta_dis)
++                if not self.plan_success:
++                    break
+                 self.move(right_action, self.back_to_origin("left"))
+                 # Move right arm up
+                 self.move(self.move_by_displacement(arm_tag, z=0.1))
+@@ -113,8 +129,9 @@ class put_bottles_dustbin(Base_Task):
+                     ))
+                 # Grasp the bottle with left arm (adjusted height)
+                 left_action = self.grasp_actor(bottle, arm_tag="left", pre_grasp_dis=0.1)
+-                left_action[1][0].target_pose[2] -= delta_dis
+-                left_action[1][1].target_pose[2] -= delta_dis
++                self._shift_grasp_height(left_action, -delta_dis)
++                if not self.plan_success:
++                    break
+                 self.move(left_action)
+                 # Open right gripper
+                 self.move(self.open_gripper(ArmTag("right")))
+diff --git a/envs/put_object_cabinet.py b/envs/put_object_cabinet.py
+index c8e5c10..9e5f05a 100644
+--- a/envs/put_object_cabinet.py
++++ b/envs/put_object_cabinet.py
+@@ -77,6 +77,11 @@ class put_object_cabinet(Base_Task):
+             model_id=self.selected_model_id,
+         )
+         self.object.set_mass(0.01)
++        # Policy evaluation calls check_success() without running the
++        # scripted-expert play_once() that historically initialized these.
++        # Capture the same episode-initial values when the actor is created.
++        self.arm_tag = ArmTag("right" if self.object.get_pose().p[0] > 0 else "left")
++        self.origin_z = self.object.get_pose().p[2]
+         self.add_prohibit_area(self.object, padding=0.01)
+         self.add_prohibit_area(self.cabinet, padding=0.01)
+         self.prohibited_area.append([-0.15, -0.3, 0.15, 0.3])
+diff --git a/policy/pi05/packages/openpi-client/src/openpi_client/websocket_client_policy.py b/policy/pi05/packages/openpi-client/src/openpi_client/websocket_client_policy.py
+index e309fbb..36f9bad 100755
+--- a/policy/pi05/packages/openpi-client/src/openpi_client/websocket_client_policy.py
++++ b/policy/pi05/packages/openpi-client/src/openpi_client/websocket_client_policy.py
+@@ -27,7 +27,13 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
+         logging.info(f"Waiting for server at {self._uri}...")
+         while True:
+             try:
+-                conn = websockets.sync.client.connect(self._uri, compression=None, max_size=None)
++                # The PI0.5 server wraps sample_actions in torch.compile(mode="max-autotune"),
++                # so the first inference on a fresh process can take several minutes to
++                # trace/autotune. Disable client-side keepalive pings so that call is never
++                # mistaken for a dead connection.
++                conn = websockets.sync.client.connect(
++                    self._uri, compression=None, max_size=None, ping_interval=None
++                )
+                 metadata = msgpack_numpy.unpackb(conn.recv())
+                 return conn, metadata
+             except ConnectionRefusedError:
+diff --git a/policy/pi05/src/openpi/models_pytorch/pi0_pytorch.py b/policy/pi05/src/openpi/models_pytorch/pi0_pytorch.py
+index 25f0580..847e153 100644
+--- a/policy/pi05/src/openpi/models_pytorch/pi0_pytorch.py
++++ b/policy/pi05/src/openpi/models_pytorch/pi0_pytorch.py
+@@ -1,5 +1,6 @@
+ import logging
+ import math
++import time
+ 
+ import torch
+ from torch import Tensor
+@@ -373,13 +374,8 @@ class PI0Pytorch(nn.Module):
+         return F.mse_loss(u_t, v_t, reduction="none")
+ 
+     @torch.no_grad()
+-    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
+-        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
+-        bsize = observation.state.shape[0]
+-        if noise is None:
+-            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
+-            noise = self.sample_noise(actions_shape, device)
+-
++    def _encode_observation_prefix(self, observation):
++        """Encode an observation once and return its state and reusable VLM KV cache."""
+         images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+ 
+         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+@@ -397,6 +393,22 @@ class PI0Pytorch(nn.Module):
+             inputs_embeds=[prefix_embs, None],
+             use_cache=True,
+         )
++        return state, prefix_pad_masks, past_key_values
++
++    @torch.no_grad()
++    def _integrate_actions_from_noise(
++        self,
++        device,
++        state,
++        prefix_pad_masks,
++        past_key_values,
++        noise,
++        *,
++        num_steps,
++    ) -> Tensor:
++        """Run Euler flow integration from an already sampled noise batch."""
++
++        bsize = noise.shape[0]
+ 
+         dt = -1.0 / num_steps
+         dt = torch.tensor(dt, dtype=torch.float32, device=device)
+@@ -418,6 +430,140 @@ class PI0Pytorch(nn.Module):
+             time += dt
+         return x_t
+ 
++    @torch.no_grad()
++    def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
++        """Do a full inference forward and compute the action (batch_size x horizon x action_dim)."""
++
++        bsize = observation.state.shape[0]
++        if noise is None:
++            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
++            noise = self.sample_noise(actions_shape, device)
++        state, prefix_pad_masks, past_key_values = self._encode_observation_prefix(observation)
++        return self._integrate_actions_from_noise(
++            device,
++            state,
++            prefix_pad_masks,
++            past_key_values,
++            noise,
++            num_steps=num_steps,
++        )
++
++    @torch.no_grad()
++    def sample_action_distribution(
++        self,
++        device,
++        observation,
++        *,
++        num_samples=5,
++        noise=None,
++        num_steps=10,
++        seed=None,
++        return_reference_action=False,
++        return_timing=False,
++    ) -> Tensor | tuple[Tensor, Tensor] | tuple[Tensor, Tensor, dict[str, float]]:
++        """Sample ``[N, H, D]`` actions while encoding the observation prefix once.
++
++        This initial implementation intentionally accepts one observation at a
++        time. The expensive image/language prefix is encoded with batch size one,
++        then its KV cache is repeated for the stochastic action batch.
++        """
++
++        if observation.state.shape[0] != 1:
++            raise ValueError(
++                "sample_action_distribution currently requires one observation; "
++                f"got batch size {observation.state.shape[0]}"
++            )
++        if num_samples < 2:
++            raise ValueError("num_samples must be at least two")
++
++        def synchronize() -> None:
++            if torch.device(device).type == "cuda":
++                torch.cuda.synchronize(device=device)
++
++        synchronize()
++        total_started = time.perf_counter()
++        noise_started = time.perf_counter()
++        expected_shape = (num_samples, self.config.action_horizon, self.config.action_dim)
++        if noise is None:
++            if seed is None:
++                noise = self.sample_noise(expected_shape, device)
++            else:
++                generator = torch.Generator(device=device)
++                generator.manual_seed(int(seed))
++                noise = torch.randn(
++                    expected_shape,
++                    generator=generator,
++                    dtype=torch.float32,
++                    device=device,
++                )
++        else:
++            noise = torch.as_tensor(noise, dtype=torch.float32, device=device)
++            if tuple(noise.shape) != expected_shape:
++                raise ValueError(f"Expected noise shape {expected_shape}, got {tuple(noise.shape)}")
++        synchronize()
++        noise_ms = (time.perf_counter() - noise_started) * 1000
++
++        prefix_started = time.perf_counter()
++        state, prefix_pad_masks, past_key_values = self._encode_observation_prefix(observation)
++        synchronize()
++        prefix_ms = (time.perf_counter() - prefix_started) * 1000
++        reference_action = None
++        reference_action_ms = 0.0
++        if return_reference_action:
++            # Preserve ordinary batch-one action numerics for execution. BF16
++            # matrix kernels can vary slightly with batch size, so sample zero
++            # from the N-way metric batch is not guaranteed to be bitwise equal
++            # to the original single-action policy even with identical noise.
++            # The expensive observation prefix remains shared; only the small
++            # action-expert integration is evaluated once more at batch size one.
++            reference_started = time.perf_counter()
++            reference_action = self._integrate_actions_from_noise(
++                device,
++                state,
++                prefix_pad_masks,
++                past_key_values,
++                noise[:1],
++                num_steps=num_steps,
++            )
++            synchronize()
++            reference_action_ms = (time.perf_counter() - reference_started) * 1000
++        if not hasattr(past_key_values, "batch_repeat_interleave"):
++            raise TypeError(
++                "The installed Transformers cache cannot repeat a prefix batch; "
++                "use the repository's pinned Transformers version"
++            )
++        flow_started = time.perf_counter()
++        past_key_values.batch_repeat_interleave(num_samples)
++        state = state.repeat_interleave(num_samples, dim=0)
++        prefix_pad_masks = prefix_pad_masks.repeat_interleave(num_samples, dim=0)
++        samples = self._integrate_actions_from_noise(
++            device,
++            state,
++            prefix_pad_masks,
++            past_key_values,
++            noise,
++            num_steps=num_steps,
++        )
++        synchronize()
++        flow_sampling_ms = (time.perf_counter() - flow_started) * 1000
++        total_model_ms = (time.perf_counter() - total_started) * 1000
++        timing = {
++            "noise_ms": noise_ms,
++            "observation_prefix_ms": prefix_ms,
++            "reference_action_ms": reference_action_ms,
++            "flow_sampling_ms": flow_sampling_ms,
++            "total_model_ms": total_model_ms,
++            "observation_prefix_shared": True,
++        }
++        if return_reference_action:
++            assert reference_action is not None
++            if return_timing:
++                return samples, reference_action, timing
++            return samples, reference_action
++        if return_timing:
++            raise ValueError("return_timing requires return_reference_action=True")
++        return samples
++
+     def denoise_step(
+         self,
+         state,
+diff --git a/policy/pi05/src/openpi/policies/aloha_policy.py b/policy/pi05/src/openpi/policies/aloha_policy.py
+index f16be33..810cc3b 100644
+--- a/policy/pi05/src/openpi/policies/aloha_policy.py
++++ b/policy/pi05/src/openpi/policies/aloha_policy.py
+@@ -97,7 +97,7 @@ class AlohaOutputs(transforms.DataTransformFn):
+ 
+     def __call__(self, data: dict) -> dict:
+         # Only return the first 14 dims.
+-        actions = np.asarray(data["actions"][:, :14])
++        actions = np.asarray(data["actions"])[..., :14]
+         return {"actions": _encode_actions(actions, adapt_to_pi=self.adapt_to_pi)}
+ 
+ 
+@@ -191,12 +191,12 @@ def _encode_actions(actions: np.ndarray, *, adapt_to_pi: bool = False) -> np.nda
+     if adapt_to_pi:
+         # Flip the joints.
+         actions = _joint_flip_mask() * actions
+-        actions[:, [6, 13]] = _gripper_from_angular(actions[:, [6, 13]])
++        actions[..., [6, 13]] = _gripper_from_angular(actions[..., [6, 13]])
+     return actions
+ 
+ 
+ def _encode_actions_inv(actions: np.ndarray, *, adapt_to_pi: bool = False) -> np.ndarray:
+     if adapt_to_pi:
+         actions = _joint_flip_mask() * actions
+-        actions[:, [6, 13]] = _gripper_from_angular_inv(actions[:, [6, 13]])
++        actions[..., [6, 13]] = _gripper_from_angular_inv(actions[..., [6, 13]])
+     return actions
+diff --git a/policy/pi05/src/openpi/policies/policy.py b/policy/pi05/src/openpi/policies/policy.py
+index b9b708b..302b47d 100644
+--- a/policy/pi05/src/openpi/policies/policy.py
++++ b/policy/pi05/src/openpi/policies/policy.py
+@@ -105,6 +105,82 @@ class Policy(BasePolicy):
+         }
+         return outputs
+ 
++    def infer_action_distribution(
++        self,
++        obs: dict,
++        *,
++        num_samples: int = 5,
++        num_steps: int = 10,
++        seed: int | None = None,
++        noise: np.ndarray | None = None,
++    ) -> dict:
++        """Sample a PyTorch flow policy while sharing one observation prefix.
++
++        The original :meth:`infer` method remains the single-sample API. This
++        method exposes both the model's normalized 32-D samples and the final
++        14-D ALOHA/RoboTwin absolute joint targets.
++        """
++
++        if not self._is_pytorch_model:
++            raise TypeError("Shared-prefix action sampling is currently implemented only for PyTorch policies")
++
++        inputs = jax.tree.map(lambda x: x, obs)
++        inputs = self._input_transform(inputs)
++        inputs = jax.tree.map(
++            lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...],
++            inputs,
++        )
++        observation = _model.Observation.from_dict(inputs)
++
++        started = time.monotonic()
++        sampled = self._model.sample_action_distribution(
++            self._pytorch_device,
++            observation,
++            num_samples=num_samples,
++            noise=noise,
++            num_steps=num_steps,
++            seed=seed,
++            return_reference_action=True,
++            return_timing=True,
++        )
++        normalized, normalized_reference, model_timing = sampled
++        normalized = np.asarray(normalized.detach().cpu(), dtype=np.float32)
++        normalized_reference = np.asarray(
++            normalized_reference.detach().cpu(), dtype=np.float32
++        )
++
++        # Output transforms are coordinate-wise and broadcast over the leading
++        # stochastic-sample axis. Supplying one current state therefore restores
++        # all samples to absolute physical controls without a Python sample loop.
++        transformed = self._output_transform(
++            {
++                "state": np.asarray(inputs["state"][0].detach().cpu()),
++                "actions": normalized.copy(),
++            }
++        )
++        physical = np.asarray(transformed["actions"], dtype=np.float32)
++        reference_transformed = self._output_transform(
++            {
++                "state": np.asarray(inputs["state"][0].detach().cpu()),
++                "actions": normalized_reference.copy(),
++            }
++        )
++        physical_reference = np.asarray(reference_transformed["actions"], dtype=np.float32)
++        infer_ms = (time.monotonic() - started) * 1000
++        if physical.shape != (num_samples, self._model.config.action_horizon, 14):
++            raise ValueError(f"Expected physical actions [N, H, 14], got {physical.shape}")
++        if physical_reference.shape != (1, self._model.config.action_horizon, 14):
++            raise ValueError(
++                f"Expected reference actions [1, H, 14], got {physical_reference.shape}"
++            )
++        return {
++            "normalized_action_samples": normalized,
++            "physical_action_samples": physical,
++            "normalized_reference_action": normalized_reference[0],
++            "physical_reference_action": physical_reference[0],
++            "policy_timing": {**model_timing, "infer_ms": infer_ms},
++        }
++
+     @property
+     def metadata(self) -> dict[str, Any]:
+         return self._metadata
+diff --git a/policy/pi05/scripts/serve_motus_robotwin.py b/policy/pi05/scripts/serve_motus_robotwin.py
+new file mode 100644
+index 0000000..56e50c8
+--- /dev/null
++++ b/policy/pi05/scripts/serve_motus_robotwin.py
+@@ -0,0 +1,53 @@
++#!/usr/bin/env python3
++"""Serve the Motus RoboTwin PI0.5 checkpoint, optionally with Far Mass."""
++
++from __future__ import annotations
++
++import dataclasses
++import logging
++import socket
++
++import tyro
++
++from openpi.policies.motus_robotwin_policy import create_policy
++from openpi.policies.sampling_far_mass_policy import DEFAULT_NORMALIZED_RADII
++from openpi.policies.sampling_far_mass_policy import DEFAULT_PHYSICAL_RADII
++from openpi.policies.sampling_far_mass_policy import SamplingFarMassPolicy
++from openpi.serving.websocket_policy_server import WebsocketPolicyServer
++from openpi.uncertainty import FarMassConfig
++
++
++@dataclasses.dataclass
++class Args:
++    checkpoint_dir: str
++    host: str = "0.0.0.0"
++    port: int = 18100
++    device: str = "cuda"
++    compute_far_mass: bool = False
++    num_uncertainty_samples: int = 5
++    far_mass_radii: tuple[float, ...] = DEFAULT_PHYSICAL_RADII
++    normalized_far_mass_radii: tuple[float, ...] = DEFAULT_NORMALIZED_RADII
++
++
++def main(args: Args) -> None:
++    base_policy = create_policy(args.checkpoint_dir, device=args.device)
++    config = FarMassConfig(
++        num_uncertainty_samples=args.num_uncertainty_samples,
++        compute_far_mass=args.compute_far_mass,
++        far_mass_radii=args.far_mass_radii,
++        normalized_far_mass_radii=args.normalized_far_mass_radii,
++    )
++    policy = SamplingFarMassPolicy(base_policy, config)
++    hostname = socket.gethostname()
++    logging.info("Serving Motus PI0.5 on %s (%s:%d)", hostname, args.host, args.port)
++    WebsocketPolicyServer(
++        policy=policy,
++        host=args.host,
++        port=args.port,
++        metadata=policy.metadata,
++    ).serve_forever()
++
++
++if __name__ == "__main__":
++    logging.basicConfig(level=logging.INFO, force=True)
++    main(tyro.cli(Args))
+diff --git a/policy/pi05/src/openpi/policies/motus_robotwin_policy.py b/policy/pi05/src/openpi/policies/motus_robotwin_policy.py
+new file mode 100644
+index 0000000..41e50fd
+--- /dev/null
++++ b/policy/pi05/src/openpi/policies/motus_robotwin_policy.py
+@@ -0,0 +1,55 @@
++"""Loader for ``motus-robotics/pi0.5_robotwin2``."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++from openpi import transforms
++from openpi.models import pi0_config
++from openpi.policies import policy as _policy
++from openpi.policies import policy_config
++from openpi.training import config as training_config
++
++
++ASSET_ID = "pi0.5_clean_randomize_joint_training"
++
++
++def make_train_config(checkpoint_dir: str | Path) -> training_config.TrainConfig:
++    """Reconstruct the inference-relevant portion of the published train config."""
++
++    checkpoint = Path(checkpoint_dir).expanduser().resolve()
++    return training_config.TrainConfig(
++        name="motus_pi05_robotwin2",
++        project_name="pi05_finetune",
++        exp_name="robotwin_clean_randomized_joint_training",
++        model=pi0_config.Pi0Config(pi05=True, action_horizon=32),
++        data=training_config.LeRobotAlohaDataConfig(
++            repo_id="clean_randomized_joint_training",
++            assets=training_config.AssetsConfig(
++                assets_dir=str(checkpoint / "assets"),
++                asset_id=ASSET_ID,
++            ),
++            base_config=training_config.DataConfig(prompt_from_task=True),
++            adapt_to_pi=True,
++            use_delta_joint_actions=True,
++            repack_transforms=transforms.Group(),
++            action_sequence_keys=("actions",),
++        ),
++        seed=42,
++    )
++
++
++def create_policy(checkpoint_dir: str | Path, *, device: str = "cuda") -> _policy.Policy:
++    checkpoint = Path(checkpoint_dir).expanduser().resolve()
++    required = (
++        checkpoint / "model.safetensors",
++        checkpoint / "assets" / ASSET_ID / "norm_stats.json",
++    )
++    missing = [str(path) for path in required if not path.is_file()]
++    if missing:
++        raise FileNotFoundError(f"Incomplete Motus PI0.5 checkpoint; missing: {missing}")
++    return policy_config.create_trained_policy(
++        make_train_config(checkpoint),
++        checkpoint,
++        pytorch_device=device,
++    )
+diff --git a/policy/pi05/src/openpi/policies/sampling_far_mass_policy.py b/policy/pi05/src/openpi/policies/sampling_far_mass_policy.py
+new file mode 100644
+index 0000000..f266b03
+--- /dev/null
++++ b/policy/pi05/src/openpi/policies/sampling_far_mass_policy.py
+@@ -0,0 +1,124 @@
++"""Policy wrapper that adds sampling-based Far Mass to a PyTorch PI0.5 policy."""
++
++from __future__ import annotations
++
++import time
++
++import numpy as np
++from typing_extensions import override
++
++from openpi.policies import policy as _policy
++from openpi.uncertainty import FarMassConfig
++from openpi.uncertainty import compute_sampling_far_mass
++from openpi_client import base_policy as _base_policy
++
++
++# RoboTwin's ALOHA action is [left arm 6, left gripper, right arm 6, right
++# gripper]. Arm targets are radians; grippers are unitless normalized aperture.
++DEFAULT_ARM_JOINT_RADIUS_RAD = 0.05
++DEFAULT_GRIPPER_APERTURE_RADIUS = 0.10
++DEFAULT_PHYSICAL_RADII = (
++    *((DEFAULT_ARM_JOINT_RADIUS_RAD,) * 6),
++    DEFAULT_GRIPPER_APERTURE_RADIUS,
++    *((DEFAULT_ARM_JOINT_RADIUS_RAD,) * 6),
++    DEFAULT_GRIPPER_APERTURE_RADIUS,
++)
++DEFAULT_NORMALIZED_RADII = (0.10,) * 14
++DEFAULT_NORMALIZED_ACTION_DISTANCE_SCALES = (1.0,) * 14
++
++
++class SamplingFarMassPolicy(_base_policy.BasePolicy):
++    """Preserve ordinary inference unless Far Mass sampling is enabled."""
++
++    def __init__(self, policy: _policy.Policy, config: FarMassConfig):
++        self._policy = policy
++        self._config = config
++
++    @property
++    def metadata(self) -> dict:
++        return {
++            **self._policy.metadata,
++            "sampling_far_mass": {
++                "enabled": self._config.compute_far_mass,
++                "num_samples": self._config.num_uncertainty_samples,
++                "dominant_trajectory_method": "normalized_space_medoid",
++                "physical_radii": list(self._physical_radii()),
++                "normalized_radii": list(self._normalized_radii()),
++                "action_distance_scales": list(self._action_distance_scales()),
++            },
++        }
++
++    def _physical_radii(self) -> tuple[float, ...]:
++        return self._config.far_mass_radii or DEFAULT_PHYSICAL_RADII
++
++    def _normalized_radii(self) -> tuple[float, ...]:
++        return self._config.normalized_far_mass_radii or DEFAULT_NORMALIZED_RADII
++
++    def _action_distance_scales(self) -> tuple[float, ...]:
++        return self._config.action_distance_scales or DEFAULT_NORMALIZED_ACTION_DISTANCE_SCALES
++
++    def _metric(
++        self,
++        samples: np.ndarray,
++        radii: tuple[float, ...],
++        *,
++        dominant_sample_index: int | None = None,
++        pairwise_distances: np.ndarray | None = None,
++    ) -> dict:
++        return compute_sampling_far_mass(
++            samples,
++            radii,
++            action_scales=self._action_distance_scales(),
++            dominant_sample_index=dominant_sample_index,
++            pairwise_distances=pairwise_distances,
++        )
++
++    @override
++    def infer(self, obs: dict) -> dict:
++        if not self._config.compute_far_mass:
++            return self._policy.infer(obs)
++
++        request = dict(obs)
++        seed = request.pop("uncertainty_seed", None)
++        distribution = self._policy.infer_action_distribution(
++            request,
++            num_samples=self._config.num_uncertainty_samples,
++            seed=None if seed is None else int(seed),
++        )
++        normalized_samples = distribution["normalized_action_samples"][..., :14]
++        physical_samples = distribution["physical_action_samples"]
++
++        metric_started = time.monotonic()
++        normalized_metric = self._metric(normalized_samples, self._normalized_radii())
++        physical_metric = self._metric(
++            physical_samples,
++            self._physical_radii(),
++            dominant_sample_index=int(normalized_metric["dominant_sample_index"]),
++            pairwise_distances=np.asarray(normalized_metric["pairwise_distances"]),
++        )
++        metric_ms = (time.monotonic() - metric_started) * 1000
++
++        # Execute the batch-one reference trajectory, which uses the same first
++        # noise draw but preserves the original policy's batch-one BF16 numerics.
++        # Metric selection uses one coherent sampled trajectory as its medoid.
++        # Execution still uses the batch-one reference trajectory so enabling
++        # uncertainty does not change ordinary PI0.5 action numerics.
++        result = {
++            "actions": distribution["physical_reference_action"],
++            **physical_metric,
++            "normalized": normalized_metric,
++            "sampling_farmass_mean": float(np.mean(physical_metric["far_mass_uncertainty"])),
++            "sampling_far_mass_mean": float(np.mean(physical_metric["far_mass"])),
++            "sampling_mean_far_distance_mean": float(
++                np.mean(physical_metric["mean_far_distance"])
++            ),
++            "policy_timing": {
++                **distribution["policy_timing"],
++                "far_mass_metric_ms": metric_ms,
++            },
++        }
++        return result
++
++    @override
++    def reset(self) -> None:
++        self._policy.reset()
+diff --git a/policy/pi05/src/openpi/uncertainty.py b/policy/pi05/src/openpi/uncertainty.py
+new file mode 100644
+index 0000000..c9a691b
+--- /dev/null
++++ b/policy/pi05/src/openpi/uncertainty.py
+@@ -0,0 +1,235 @@
++"""Lightweight sampling-based uncertainty for continuous flow actions."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Sequence
++
++import numpy as np
++
++
++@dataclass(frozen=True)
++class FarMassConfig:
++    """Configuration for trajectory-medoid Flow-Far-Mass uncertainty."""
++
++    num_uncertainty_samples: int = 5
++    compute_far_mass: bool = False
++    far_mass_radii: tuple[float, ...] | None = None
++    normalized_far_mass_radii: tuple[float, ...] | None = None
++    action_distance_scales: tuple[float, ...] | None = None
++
++    def __post_init__(self) -> None:
++        if self.num_uncertainty_samples < 2:
++            raise ValueError("num_uncertainty_samples must be at least two")
++
++
++def _validate_samples(action_samples: np.ndarray) -> np.ndarray:
++    samples = np.asarray(action_samples, dtype=np.float64)
++    if samples.ndim != 3:
++        raise ValueError(f"Expected action samples [N, H, D], got {samples.shape}")
++    if samples.shape[0] < 2:
++        raise ValueError("At least two action samples are required")
++    if not np.all(np.isfinite(samples)):
++        raise ValueError("Action samples contain non-finite values")
++    return samples
++
++
++def _validate_dimension_values(
++    values: Sequence[float] | None,
++    action_dim: int,
++    *,
++    name: str,
++    default: float = 1.0,
++) -> np.ndarray:
++    if values is None:
++        result = np.full(action_dim, default, dtype=np.float64)
++    else:
++        result = np.asarray(values, dtype=np.float64)
++    if result.shape != (action_dim,):
++        raise ValueError(f"Expected {action_dim} {name}, got {result.shape}")
++    if not np.all(np.isfinite(result)) or np.any(result <= 0):
++        raise ValueError(f"All {name} must be finite and positive")
++    return result
++
++
++def compute_trajectory_distance(
++    action_a: np.ndarray,
++    action_b: np.ndarray,
++    action_scales: Sequence[float] | None = None,
++    action_weights: Sequence[float] | None = None,
++) -> float:
++    """Return scale-normalized mean-horizon L1 trajectory distance."""
++
++    first = np.asarray(action_a, dtype=np.float64)
++    second = np.asarray(action_b, dtype=np.float64)
++    if first.ndim != 2 or first.shape != second.shape:
++        raise ValueError(f"Expected matching [H, D] trajectories, got {first.shape} and {second.shape}")
++    if not np.all(np.isfinite(first)) or not np.all(np.isfinite(second)):
++        raise ValueError("Action trajectories contain non-finite values")
++    scales = _validate_dimension_values(action_scales, first.shape[1], name="action scales")
++    weights = _validate_dimension_values(action_weights, first.shape[1], name="action weights")
++    return float(np.sum(np.abs(first - second) / scales[None, :] * weights[None, :], axis=-1).mean())
++
++
++def compute_pairwise_trajectory_distances(
++    action_samples: np.ndarray,
++    action_scales: Sequence[float] | None = None,
++    action_weights: Sequence[float] | None = None,
++) -> np.ndarray:
++    """Return the symmetric ``[N, N]`` trajectory-distance matrix."""
++
++    samples = _validate_samples(action_samples)
++    scales = _validate_dimension_values(action_scales, samples.shape[2], name="action scales")
++    weights = _validate_dimension_values(action_weights, samples.shape[2], name="action weights")
++    differences = np.abs(samples[:, None, :, :] - samples[None, :, :, :])
++    distances = np.sum(
++        differences / scales[None, None, None, :] * weights[None, None, None, :],
++        axis=-1,
++    ).mean(axis=-1)
++    return distances.astype(np.float32)
++
++
++def compute_trajectory_medoid(
++    action_samples: np.ndarray,
++    action_scales: Sequence[float] | None = None,
++    action_weights: Sequence[float] | None = None,
++) -> tuple[np.ndarray, int, np.ndarray]:
++    """Choose one complete sampled trajectory as the dominant hypothesis."""
++
++    samples = _validate_samples(action_samples)
++    pairwise = compute_pairwise_trajectory_distances(samples, action_scales, action_weights)
++    dominant_sample_index = int(np.argmin(pairwise.sum(axis=1)))
++    return (
++        samples[dominant_sample_index].astype(np.float32),
++        dominant_sample_index,
++        pairwise,
++    )
++
++
++def _validate_dominant(action_samples: np.ndarray, dominant_action: np.ndarray) -> np.ndarray:
++    dominant = np.asarray(dominant_action, dtype=np.float64)
++    if dominant.shape != action_samples.shape[1:]:
++        raise ValueError(f"Expected dominant action {action_samples.shape[1:]}, got {dominant.shape}")
++    if not np.all(np.isfinite(dominant)):
++        raise ValueError("Dominant action contains non-finite values")
++    return dominant
++
++
++def compute_far_mask(
++    action_samples: np.ndarray,
++    dominant_action: np.ndarray,
++    radii: Sequence[float],
++) -> np.ndarray:
++    """Return ``[N, H, D]`` mask for samples outside physical radii."""
++
++    samples = _validate_samples(action_samples)
++    dominant = _validate_dominant(samples, dominant_action)
++    radius = _validate_dimension_values(radii, samples.shape[2], name="Far Mass radii")
++    return np.abs(samples - dominant[None, :, :]) > radius[None, None, :]
++
++
++def compute_far_mass(
++    action_samples: np.ndarray,
++    dominant_action: np.ndarray,
++    radii: Sequence[float],
++) -> np.ndarray:
++    """Estimate empirical probability outside each dominant neighborhood."""
++
++    return compute_far_mask(action_samples, dominant_action, radii).mean(axis=0).astype(np.float32)
++
++
++def compute_mean_far_distance(
++    action_samples: np.ndarray,
++    dominant_action: np.ndarray,
++    radii: Sequence[float],
++) -> np.ndarray:
++    """Return conditional mean distance among far samples for every slot."""
++
++    samples = _validate_samples(action_samples)
++    dominant = _validate_dominant(samples, dominant_action)
++    far_mask = compute_far_mask(samples, dominant, radii)
++    deltas = np.abs(samples - dominant[None, :, :])
++    far_counts = far_mask.sum(axis=0)
++    far_distance_sums = np.where(far_mask, deltas, 0.0).sum(axis=0)
++    result = np.zeros(samples.shape[1:], dtype=np.float64)
++    np.divide(far_distance_sums, far_counts, out=result, where=far_counts > 0)
++    return result.astype(np.float32)
++
++
++def compute_far_mass_uncertainty(
++    action_samples: np.ndarray,
++    dominant_action: np.ndarray,
++    radii: Sequence[float],
++) -> np.ndarray:
++    """Return probability-weighted far distance ``mean(1[delta>r] * delta)``."""
++
++    samples = _validate_samples(action_samples)
++    dominant = _validate_dominant(samples, dominant_action)
++    far_mask = compute_far_mask(samples, dominant, radii)
++    deltas = np.abs(samples - dominant[None, :, :])
++    return np.where(far_mask, deltas, 0.0).mean(axis=0).astype(np.float32)
++
++
++def aggregate_uncertainty(uncertainty: np.ndarray) -> tuple[np.ndarray, float]:
++    """Return optional per-horizon and global sum aggregations."""
++
++    values = np.asarray(uncertainty, dtype=np.float64)
++    if values.ndim != 2 or not np.all(np.isfinite(values)) or np.any(values < 0):
++        raise ValueError("uncertainty must be a finite non-negative [H, D] array")
++    return values.sum(axis=-1).astype(np.float32), float(values.sum())
++
++
++def compute_sampling_far_mass(
++    action_samples: np.ndarray,
++    radii: Sequence[float],
++    *,
++    action_scales: Sequence[float] | None = None,
++    action_weights: Sequence[float] | None = None,
++    dominant_sample_index: int | None = None,
++    pairwise_distances: np.ndarray | None = None,
++) -> dict[str, np.ndarray | int | float]:
++    """Compute trajectory-medoid empirical Flow-Far-Mass uncertainty."""
++
++    samples = _validate_samples(action_samples)
++    if dominant_sample_index is None:
++        dominant, dominant_sample_index, computed_pairwise = compute_trajectory_medoid(
++            samples,
++            action_scales,
++            action_weights,
++        )
++    else:
++        if not 0 <= dominant_sample_index < samples.shape[0]:
++            raise ValueError(f"dominant_sample_index {dominant_sample_index} is outside [0, {samples.shape[0]})")
++        dominant = samples[dominant_sample_index].astype(np.float32)
++        computed_pairwise = compute_pairwise_trajectory_distances(
++            samples,
++            action_scales,
++            action_weights,
++        )
++    if pairwise_distances is not None:
++        supplied = np.asarray(pairwise_distances, dtype=np.float32)
++        if supplied.shape != (samples.shape[0], samples.shape[0]):
++            raise ValueError(f"Expected pairwise distances {(samples.shape[0], samples.shape[0])}, got {supplied.shape}")
++        computed_pairwise = supplied
++
++    far_mask = compute_far_mask(samples, dominant, radii)
++    deltas = np.abs(samples - np.asarray(dominant, dtype=np.float64)[None, :, :])
++    far_mass = far_mask.mean(axis=0, dtype=np.float64).astype(np.float32)
++    far_counts = far_mask.sum(axis=0)
++    far_distance_sums = np.where(far_mask, deltas, 0.0).sum(axis=0)
++    mean_far_distance = np.zeros(samples.shape[1:], dtype=np.float64)
++    np.divide(far_distance_sums, far_counts, out=mean_far_distance, where=far_counts > 0)
++    uncertainty = np.where(far_mask, deltas, 0.0).mean(axis=0)
++    uncertainty_per_horizon, uncertainty_scalar = aggregate_uncertainty(uncertainty)
++    return {
++        "action_samples": samples.astype(np.float32),
++        "dominant_sample_index": int(dominant_sample_index),
++        "dominant_action": dominant.astype(np.float32),
++        "pairwise_distances": computed_pairwise.astype(np.float32),
++        "far_mask": far_mask,
++        "far_mass": far_mass,
++        "mean_far_distance": mean_far_distance.astype(np.float32),
++        "far_mass_uncertainty": uncertainty.astype(np.float32),
++        "uncertainty_per_horizon": uncertainty_per_horizon,
++        "uncertainty_scalar": uncertainty_scalar,
++    }
+diff --git a/policy/pi05/src/openpi/uncertainty_test.py b/policy/pi05/src/openpi/uncertainty_test.py
+new file mode 100644
+index 0000000..577481b
+--- /dev/null
++++ b/policy/pi05/src/openpi/uncertainty_test.py
+@@ -0,0 +1,86 @@
++import numpy as np
++
++from openpi.uncertainty import aggregate_uncertainty
++from openpi.uncertainty import compute_sampling_far_mass
++from openpi.uncertainty import compute_trajectory_distance
++from openpi.uncertainty import compute_trajectory_medoid
++
++
++def test_lightweight_flow_far_mass_shapes_ranges_and_empirical_masses():
++    rng = np.random.default_rng(7)
++    samples = rng.normal(size=(5, 6, 3)).astype(np.float32)
++    result = compute_sampling_far_mass(
++        samples,
++        radii=(0.5, 0.5, 0.5),
++        action_scales=(1.0, 2.0, 0.5),
++    )
++
++    assert result["action_samples"].shape == (5, 6, 3)
++    assert result["far_mask"].shape == (5, 6, 3)
++    assert result["pairwise_distances"].shape == (5, 5)
++    for key in ("dominant_action", "far_mass", "mean_far_distance", "far_mass_uncertainty"):
++        assert result[key].shape == (6, 3)
++        assert np.all(np.isfinite(result[key]))
++    dominant_index = result["dominant_sample_index"]
++    np.testing.assert_array_equal(result["dominant_action"], samples[dominant_index])
++    assert np.all(result["far_mass"] >= 0.0)
++    assert np.all(result["far_mass"] <= 1.0)
++    np.testing.assert_allclose(result["far_mass"] * 5, np.round(result["far_mass"] * 5))
++    assert np.all(result["far_mass_uncertainty"] >= 0.0)
++    np.testing.assert_allclose(
++        result["far_mass_uncertainty"],
++        result["far_mass"] * result["mean_far_distance"],
++        rtol=1e-6,
++        atol=1e-7,
++    )
++
++
++def test_medoid_is_one_coherent_sample_not_coordinatewise_center():
++    samples = np.array(
++        [
++            [[0.0, 0.0], [0.0, 0.0]],
++            [[0.1, 0.1], [0.1, 0.1]],
++            [[10.0, -10.0], [-10.0, 10.0]],
++        ],
++        dtype=np.float32,
++    )
++    dominant, index, pairwise = compute_trajectory_medoid(samples, action_scales=(1.0, 1.0))
++
++    assert index in (0, 1)
++    np.testing.assert_array_equal(dominant, samples[index])
++    np.testing.assert_allclose(pairwise, pairwise.T)
++    np.testing.assert_allclose(np.diag(pairwise), 0.0)
++
++
++def test_far_mass_uses_probability_weighted_mean_far_distance():
++    dominant_cluster = np.zeros((4, 2, 1), dtype=np.float32)
++    alternative = np.full((1, 2, 1), 3.0, dtype=np.float32)
++    samples = np.concatenate([dominant_cluster, alternative], axis=0)
++    result = compute_sampling_far_mass(samples, radii=(1.0,))
++
++    np.testing.assert_allclose(result["far_mass"], 0.2)
++    np.testing.assert_allclose(result["mean_far_distance"], 3.0)
++    np.testing.assert_allclose(result["far_mass_uncertainty"], 0.6)
++
++
++def test_constant_samples_have_zero_uncertainty():
++    samples = np.ones((5, 4, 2), dtype=np.float32)
++    result = compute_sampling_far_mass(samples, radii=(0.1, 0.1))
++
++    np.testing.assert_array_equal(result["dominant_action"], samples[result["dominant_sample_index"]])
++    np.testing.assert_allclose(result["far_mass"], 0.0)
++    np.testing.assert_allclose(result["mean_far_distance"], 0.0)
++    np.testing.assert_allclose(result["far_mass_uncertainty"], 0.0)
++
++
++def test_trajectory_distance_respects_dimension_scales():
++    first = np.zeros((2, 2), dtype=np.float32)
++    second = np.array([[1.0, 10.0], [1.0, 10.0]], dtype=np.float32)
++    assert compute_trajectory_distance(first, second, action_scales=(1.0, 10.0)) == 2.0
++
++
++def test_optional_aggregations_preserve_full_metric():
++    uncertainty = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
++    per_horizon, scalar = aggregate_uncertainty(uncertainty)
++    np.testing.assert_array_equal(per_horizon, np.array([3.0, 7.0], dtype=np.float32))
++    assert scalar == 10.0
+diff --git a/policy/pi05/src/openpi/policies/aloha_policy_batch_test.py b/policy/pi05/src/openpi/policies/aloha_policy_batch_test.py
+new file mode 100644
+index 0000000..1e63bda
+--- /dev/null
++++ b/policy/pi05/src/openpi/policies/aloha_policy_batch_test.py
+@@ -0,0 +1,18 @@
++import numpy as np
++
++from openpi.policies.aloha_policy import AlohaOutputs
++
++
++def test_aloha_outputs_supports_stochastic_sample_axis():
++    rng = np.random.default_rng(4)
++    actions = rng.normal(size=(3, 5, 32)).astype(np.float32)
++    transform = AlohaOutputs(adapt_to_pi=True)
++
++    batched = transform({"actions": actions.copy()})["actions"]
++    looped = np.stack(
++        [transform({"actions": sample.copy()})["actions"] for sample in actions],
++        axis=0,
++    )
++
++    assert batched.shape == (3, 5, 14)
++    np.testing.assert_allclose(batched, looped)

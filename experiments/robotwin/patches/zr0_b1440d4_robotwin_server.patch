@@ -1,0 +1,77 @@
+diff --git a/policies/reasoning_vla_policy.py b/policies/reasoning_vla_policy.py
+index 7b23b62..225d3ec 100755
+--- a/policies/reasoning_vla_policy.py
++++ b/policies/reasoning_vla_policy.py
+@@ -25,7 +25,8 @@ class ZR0Policy(BasePolicy):
+         window_size,
+         num_denoised_steps=5,
+         max_pad_state_and_action_length=64,
+-        device="cuda:0"
++        device="cuda:0",
++        dataset_path=None,
+     ):
+         super().__init__()
+         # env params
+@@ -39,7 +40,7 @@ class ZR0Policy(BasePolicy):
+         self.prompt_suffix = "" if inference_mode == "direct_action" else "Sub task:"
+ 
+         # load relevant configurations from the constant pool
+-        self.dataset_path = DATASET2FEATURE[dataset_entry]["dataset_path"]
++        self.dataset_path = dataset_path or DATASET2FEATURE[dataset_entry]["dataset_path"]
+         self.use_quantile = DATASET2FEATURE[dataset_entry]["use_quantile"]
+         self.action_dim = json.load(open(os.path.join(self.dataset_path, "meta", "info.json")))["features"]["action"]["shape"][0]
+ 
+@@ -135,4 +136,4 @@ class ZR0Policy(BasePolicy):
+         self.global_inference_steps += 1
+         print("-"*30)
+ 
+-        return {"actions": action_chunk}
+\ No newline at end of file
++        return {"actions": action_chunk}
+diff --git a/server.py b/server.py
+index 93bd0be..b7ff402 100755
+--- a/server.py
++++ b/server.py
+@@ -19,6 +19,8 @@ def parse_option():
+     parser = argparse.ArgumentParser()
+     parser.add_argument('--dataset_entry', type=str, default="libero_v21",
+                         help="the pre-registration dataset entry in dataset2feature.yaml")
++    parser.add_argument('--dataset_path', type=str, default=None,
++                        help="optional local LeRobot v2.1 metadata/data root override")
+     parser.add_argument('--ckpt_dir', type=str, help="checkpoint directory")
+     parser.add_argument('--inference_mode', type=str, help="specify the inference mode, in `direct_action` or `subtask_then_action`")
+     parser.add_argument('--window_size', type=int, default=1, help="window size")
+@@ -37,6 +39,7 @@ def deploy():
+     # settings
+     kwargs = {
+         "dataset_entry": opt.dataset_entry,
++        "dataset_path": opt.dataset_path,
+         "ckpt_dir": opt.ckpt_dir,
+         "inference_mode": opt.inference_mode,
+         "window_size": opt.window_size,
+@@ -54,4 +57,4 @@ def deploy():
+     server.serve_forever()
+ 
+ if __name__ == "__main__":
+-    deploy()
+\ No newline at end of file
++    deploy()
+diff --git a/utils/websocket_client_policy.py b/utils/websocket_client_policy.py
+index 24ad787..e0d44c1 100755
+--- a/utils/websocket_client_policy.py
++++ b/utils/websocket_client_policy.py
+@@ -33,9 +33,12 @@ class WebsocketClientPolicy:
+         while True:
+             try:
+                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
++                # torch.compile's first inference on a fresh process can take well over
++                # the default 20s ping timeout to trace/compile. Disable client-side
++                # keepalive pings so that call is never mistaken for a dead connection.
+                 conn = websockets.sync.client.connect(
+-                    self._uri, compression=None, max_size=None, additional_headers=headers, 
+-                    # ping_interval=60, ping_timeout=120
++                    self._uri, compression=None, max_size=None, additional_headers=headers,
++                    ping_interval=None,
+                 )
+                 metadata = msgpack_numpy.unpackb(conn.recv())
+                 return conn, metadata
