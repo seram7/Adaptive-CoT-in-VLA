@@ -19,6 +19,12 @@ import numpy as np
 from websockets.exceptions import ConnectionClosed
 
 from experiments.robotwin.pi05_task_registry import get_pi05_task
+from experiments.robotwin.inference_repro import InferenceCache
+from experiments.robotwin.inference_repro import SEED_PROTOCOL
+from experiments.robotwin.inference_repro import action_hash
+from experiments.robotwin.inference_repro import observation_hash
+from experiments.robotwin.inference_repro import request_identity
+from experiments.robotwin.inference_repro import stable_request_seed
 from experiments.robotwin.robotwin_env import RoboTwinHarness
 from experiments.robotwin.router_metrics import windowed_total_variation
 
@@ -81,6 +87,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes", type=int)
     parser.add_argument("--episode-start", type=int, default=0)
     parser.add_argument("--router-seed", type=int, default=2025)
+    parser.add_argument(
+        "--seed-split",
+        help="Stable seed namespace shared by arms, e.g. main/demo_clean.",
+    )
+    parser.add_argument(
+        "--inference-cache",
+        type=Path,
+        help="SQLite cache used to share identical policy requests across routing arms.",
+    )
     parser.add_argument("--clear-cache-every", type=int, default=1)
     parser.add_argument("--instruction-type", choices=("seen", "unseen"), default="unseen")
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -115,6 +130,7 @@ def collect_provenance(args: argparse.Namespace) -> dict[str, Any]:
             packages[name] = None
     return {
         "machine_id": os.environ.get("MACHINE_ID", "MACHINE_B"),
+        "seed_protocol": SEED_PROTOCOL,
         "host": platform.node(),
         "python": platform.python_version(),
         "packages": packages,
@@ -192,8 +208,36 @@ class PI05Client:
         observation: dict[str, Any],
         instruction: str,
         *,
+        action_seed: int,
         uncertainty_seed: int,
+        execution_identity: dict[str, Any],
+        metric_identity: dict[str, Any],
+        require_far_mass: bool,
+        cache: InferenceCache,
     ) -> tuple[np.ndarray, float, dict[str, Any]]:
+        started = time.perf_counter()
+        cached_actions = cache.get_action(execution_identity)
+        cached_metrics = cache.get_metrics(metric_identity) if require_far_mass else None
+        if cached_actions is not None and (not require_far_mass or cached_metrics is not None):
+            metrics = {
+                "sampling_farmass_mean": None,
+                "sampling_far_mass_mean": None,
+                "sampling_mean_far_distance_mean": None,
+                "sampling_farmass_per_step": None,
+                "sampling_farmass_step0": None,
+                **(cached_metrics or {}),
+            }
+            metrics.update(
+                {
+                    "policy_timing": {},
+                    "server_timing": {},
+                    "websocket_reconnected": False,
+                    "inference_cache_hit": True,
+                    "inference_performed": False,
+                }
+            )
+            return cached_actions, time.perf_counter() - started, metrics
+
         obs = observation["observation"]
         payload = {
             "state": np.asarray(observation["joint_action"]["vector"], dtype=np.float32),
@@ -207,9 +251,9 @@ class PI05Client:
                 ),
             },
             "prompt": instruction,
+            "action_seed": int(action_seed),
             "uncertainty_seed": int(uncertainty_seed),
         }
-        started = time.perf_counter()
         result, reconnected = self._infer_with_reconnect(payload)
         elapsed = time.perf_counter() - started
         actions = np.asarray(result["actions"], dtype=np.float32)
@@ -219,13 +263,10 @@ class PI05Client:
             raise ValueError(f"PI0.5 returned invalid actions {actions.shape}")
         if actions.shape[0] < self.action_steps:
             raise ValueError(f"PI0.5 returned {actions.shape[0]} steps, need {self.action_steps}")
-        metrics = {
+        deterministic_metrics = {
             "sampling_farmass_mean": result.get("sampling_farmass_mean"),
             "sampling_far_mass_mean": result.get("sampling_far_mass_mean"),
             "sampling_mean_far_distance_mean": result.get("sampling_mean_far_distance_mean"),
-            "policy_timing": result.get("policy_timing", {}),
-            "server_timing": result.get("server_timing", {}),
-            "websocket_reconnected": reconnected,
         }
         far_mass_uncertainty = result.get("far_mass_uncertainty")
         if far_mass_uncertainty is not None:
@@ -236,12 +277,27 @@ class PI05Client:
                     f"{uncertainty.shape}"
                 )
             per_step = np.mean(uncertainty[: self.action_steps], axis=-1)
-            metrics["sampling_farmass_per_step"] = per_step.tolist()
-            metrics["sampling_farmass_step0"] = float(per_step[0])
+            deterministic_metrics["sampling_farmass_per_step"] = per_step.tolist()
+            deterministic_metrics["sampling_farmass_step0"] = float(per_step[0])
         else:
-            metrics["sampling_farmass_per_step"] = None
-            metrics["sampling_farmass_step0"] = None
-        return actions[: self.action_steps], elapsed, metrics
+            deterministic_metrics["sampling_farmass_per_step"] = None
+            deterministic_metrics["sampling_farmass_step0"] = None
+        if require_far_mass and deterministic_metrics["sampling_farmass_per_step"] is None:
+            raise ValueError("PI0.5 Far-Mass metrics were required but the server returned none")
+
+        actions = actions[: self.action_steps]
+        cache.put_action(execution_identity, actions)
+        if deterministic_metrics["sampling_farmass_per_step"] is not None:
+            cache.put_metrics(metric_identity, deterministic_metrics)
+        metrics = {
+            **deterministic_metrics,
+            "policy_timing": result.get("policy_timing", {}),
+            "server_timing": result.get("server_timing", {}),
+            "websocket_reconnected": reconnected,
+            "inference_cache_hit": False,
+            "inference_performed": True,
+        }
+        return actions, elapsed, metrics
 
 
 class ZR0Client:
@@ -264,7 +320,31 @@ class ZR0Client:
             self.client = self.client_class(self.host, self.port)
             return self.client.infer(payload), True
 
-    def act(self, observation: dict[str, Any], instruction: str):
+    def act(
+        self,
+        observation: dict[str, Any],
+        instruction: str,
+        *,
+        request_seed: int,
+        execution_identity: dict[str, Any],
+        reset_episode: bool,
+        cache: InferenceCache,
+    ):
+        started = time.perf_counter()
+        cached_actions = cache.get_action(execution_identity)
+        if cached_actions is not None:
+            return (
+                cached_actions,
+                time.perf_counter() - started,
+                {
+                    "websocket_reconnected": False,
+                    "inference_cache_hit": True,
+                    "inference_performed": False,
+                    "episode_reset_sent": False,
+                },
+                False,
+            )
+
         obs = observation["observation"]
         payload = {
             "task": instruction,
@@ -275,8 +355,9 @@ class ZR0Client:
             "observation.images.cam_high": np.ascontiguousarray(obs["head_camera"]["rgb"]),
             "observation.images.cam_left_wrist": np.ascontiguousarray(obs["left_camera"]["rgb"]),
             "observation.images.cam_right_wrist": np.ascontiguousarray(obs["right_camera"]["rgb"]),
+            "request_seed": int(request_seed),
+            "reset_episode": bool(reset_episode),
         }
-        started = time.perf_counter()
         result, reconnected = self._infer_with_reconnect(payload)
         elapsed = time.perf_counter() - started
         actions = np.asarray(result["actions"], dtype=np.float32)
@@ -289,7 +370,12 @@ class ZR0Client:
         # rather than padding, so unlike PI0.5 we cannot require >= action_steps.
         timing = dict(result.get("server_timing", {}))
         timing["websocket_reconnected"] = reconnected
-        return actions[: self.action_steps], elapsed, timing
+        timing["inference_cache_hit"] = False
+        timing["inference_performed"] = True
+        timing["episode_reset_sent"] = bool(reset_episode)
+        actions = actions[: self.action_steps]
+        cache.put_action(execution_identity, actions)
+        return actions, elapsed, timing, True
 
 
 @dataclass
@@ -427,8 +513,10 @@ def main() -> None:
     selected_episodes = list(enumerate(episodes))[args.episode_start:stop]
     if not selected_episodes:
         raise ValueError("No episodes selected")
+    seed_split = args.seed_split or args.task_config
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    inference_cache = InferenceCache(args.inference_cache)
     harness = RoboTwinHarness(
         args.robotwin_root,
         args.task,
@@ -453,25 +541,65 @@ def main() -> None:
 
         seed = int(episode["seed"])
         task, instruction = harness.start_episode(episode_id, seed, episode.get("info", {}))
+        router_seed = stable_request_seed(
+            args.task,
+            seed_split,
+            seed,
+            -1,
+            f"random_router:{args.router_seed}",
+        )
         router = SamplingFarMassRouter(
             args.mode,
             cot_ratio=args.cot_ratio,
             threshold=threshold,
             tv_window=args.tv_window,
-            seed=args.router_seed + seed,
+            seed=router_seed,
             cooldown_queries=args.cooldown_queries,
             cooldown_steps=args.cooldown_steps,
             force_first_query=args.force_first_query,
         )
         records: list[dict[str, Any]] = []
+        zr0_needs_reset = True
         episode_started = time.perf_counter()
         try:
             while task.take_action_cnt < task.step_lim and not task.eval_success:
                 observation = task.get_obs()
+                query_index = len(records)
+                observation_digest = observation_hash(observation, instruction)
+                pi05_action_seed = stable_request_seed(
+                    args.task, seed_split, seed, query_index, "pi05_execution"
+                )
+                pi05_uncertainty_seed = stable_request_seed(
+                    args.task, seed_split, seed, query_index, "pi05_farmass"
+                )
+                pi05_execution_identity = request_identity(
+                    task=args.task,
+                    split=seed_split,
+                    episode_seed=seed,
+                    query_index=query_index,
+                    stream="pi05_execution",
+                    request_seed=pi05_action_seed,
+                    observation_digest=observation_digest,
+                )
+                pi05_metric_identity = request_identity(
+                    task=args.task,
+                    split=seed_split,
+                    episode_seed=seed,
+                    query_index=query_index,
+                    stream="pi05_farmass",
+                    request_seed=pi05_uncertainty_seed,
+                    observation_digest=observation_digest,
+                )
+                require_far_mass = args.mode in {"pilot", THRESHOLD_MODE, STEP_THRESHOLD_MODE}
                 fast_actions, pi05_seconds, pi05_metrics = pi05.act(
                     observation,
                     instruction,
-                    uncertainty_seed=(seed * 10000 + len(records)),
+                    action_seed=pi05_action_seed,
+                    uncertainty_seed=pi05_uncertainty_seed,
+                    execution_identity=pi05_execution_identity,
+                    metric_identity=pi05_metric_identity,
+                    require_far_mass=require_far_mass,
+                    cache=inference_cache,
                 )
                 per_step = pi05_metrics["sampling_farmass_per_step"]
                 routing_uncertainty = None
@@ -487,21 +615,61 @@ def main() -> None:
                 selected_policy = "pi05"
                 zr0_seconds = None
                 zr0_timing = None
+                zr0_action_digest = None
+                zr0_request_seed = None
                 if decision["use_zr0"]:
                     assert zr0 is not None
-                    chosen_actions, zr0_seconds, zr0_timing = zr0.act(observation, instruction)
+                    zr0_request_seed = stable_request_seed(
+                        args.task,
+                        seed_split,
+                        seed,
+                        query_index,
+                        f"zr0_{args.zr0_inference_mode}_execution",
+                    )
+                    zr0_execution_identity = request_identity(
+                        task=args.task,
+                        split=seed_split,
+                        episode_seed=seed,
+                        query_index=query_index,
+                        stream=f"zr0_{args.zr0_inference_mode}_execution",
+                        request_seed=zr0_request_seed,
+                        observation_digest=observation_digest,
+                    )
+                    chosen_actions, zr0_seconds, zr0_timing, zr0_server_called = zr0.act(
+                        observation,
+                        instruction,
+                        request_seed=zr0_request_seed,
+                        execution_identity=zr0_execution_identity,
+                        reset_episode=zr0_needs_reset,
+                        cache=inference_cache,
+                    )
+                    if zr0_server_called:
+                        zr0_needs_reset = False
+                    zr0_action_digest = action_hash(chosen_actions)
                     selected_policy = f"zr0_{args.zr0_inference_mode}"
                 if args.replan_stride is not None:
                     chosen_actions = chosen_actions[: args.replan_stride]
+                selected_action_digest = action_hash(chosen_actions)
                 executed, step_latencies = harness.run_action_chunk_with_timing(
                     task, chosen_actions
                 )
+                executed_action_digest = action_hash(chosen_actions[:executed])
                 router.record_execution(executed)
                 records.append(
                     {
                         **decision,
                         **pi05_metrics,
                         "selected_policy": selected_policy,
+                        "seed_protocol": SEED_PROTOCOL,
+                        "seed_split": seed_split,
+                        "observation_hash": observation_digest,
+                        "pi05_action_seed": pi05_action_seed,
+                        "pi05_uncertainty_seed": pi05_uncertainty_seed,
+                        "pi05_action_hash": action_hash(fast_actions),
+                        "zr0_request_seed": zr0_request_seed,
+                        "zr0_action_hash": zr0_action_digest,
+                        "selected_action_hash": selected_action_digest,
+                        "executed_action_hash": executed_action_digest,
                         "sim_step_start": int(task.take_action_cnt - executed),
                         "executed_actions": int(executed),
                         "pi05_seconds": pi05_seconds,
@@ -521,9 +689,21 @@ def main() -> None:
                 )
 
             zr0_queries = sum(r["selected_policy"] != "pi05" for r in records)
+            pi05_server_calls = sum(bool(r["inference_performed"]) for r in records)
+            pi05_cache_hits = sum(bool(r["inference_cache_hit"]) for r in records)
+            zr0_server_calls = sum(
+                bool(r["zr0_server_timing"] and r["zr0_server_timing"]["inference_performed"])
+                for r in records
+            )
+            zr0_cache_hits = sum(
+                bool(r["zr0_server_timing"] and r["zr0_server_timing"]["inference_cache_hit"])
+                for r in records
+            )
             result = {
                 "task": args.task,
                 "task_config": args.task_config,
+                "seed_protocol": SEED_PROTOCOL,
+                "seed_split": seed_split,
                 "episode_id": episode_id,
                 "seed": seed,
                 "instruction": instruction,
@@ -532,6 +712,12 @@ def main() -> None:
                 "policy_queries": len(records),
                 "zr0_queries": zr0_queries,
                 "realized_cot_ratio": zr0_queries / max(1, len(records)),
+                "inference_sharing": {
+                    "pi05_server_calls": pi05_server_calls,
+                    "pi05_cache_hits": pi05_cache_hits,
+                    "zr0_server_calls": zr0_server_calls,
+                    "zr0_cache_hits": zr0_cache_hits,
+                },
                 "mode": args.mode,
                 "configured_cot_ratio": args.cot_ratio,
                 "threshold": threshold,
@@ -541,6 +727,7 @@ def main() -> None:
                 "force_first_query": args.force_first_query,
                 "action_steps": args.action_steps,
                 "replan_stride": args.replan_stride,
+                "inference_cache": str(args.inference_cache.resolve()) if args.inference_cache else None,
                 "failure_category": None if task.eval_success else "task_failure",
                 "wall_seconds": time.perf_counter() - episode_started,
                 "provenance": provenance,
@@ -554,6 +741,7 @@ def main() -> None:
                 clear_cache=(episode_id + 1) % max(1, args.clear_cache_every) == 0,
             )
 
+    inference_cache.close()
     all_records = [record for item in completed for record in item["records"]]
     zr0_latencies = [r["zr0_seconds"] for r in all_records if r["zr0_seconds"] is not None]
     step_latencies_all = [
@@ -564,6 +752,8 @@ def main() -> None:
     summary = {
         "task": args.task,
         "task_config": args.task_config,
+        "seed_protocol": SEED_PROTOCOL,
+        "seed_split": seed_split,
         "mode": args.mode,
         "episodes": len(completed),
         "successes": sum(bool(item["success"]) for item in completed),
@@ -576,6 +766,19 @@ def main() -> None:
         "force_first_query": args.force_first_query,
         "action_steps": args.action_steps,
         "replan_stride": args.replan_stride,
+        "inference_cache": str(args.inference_cache.resolve()) if args.inference_cache else None,
+        "inference_sharing": {
+            "pi05_server_calls": sum(bool(r["inference_performed"]) for r in all_records),
+            "pi05_cache_hits": sum(bool(r["inference_cache_hit"]) for r in all_records),
+            "zr0_server_calls": sum(
+                bool(r["zr0_server_timing"] and r["zr0_server_timing"]["inference_performed"])
+                for r in all_records
+            ),
+            "zr0_cache_hits": sum(
+                bool(r["zr0_server_timing"] and r["zr0_server_timing"]["inference_cache_hit"])
+                for r in all_records
+            ),
+        },
         "latency_seconds": {
             "pi05_network_mean": float(np.mean([r["pi05_seconds"] for r in all_records])),
             "zr0_network_mean": float(np.mean(zr0_latencies)) if zr0_latencies else None,

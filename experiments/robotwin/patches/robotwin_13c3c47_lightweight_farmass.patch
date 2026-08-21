@@ -223,7 +223,7 @@ index 25f0580..847e153 100644
  
          dt = -1.0 / num_steps
          dt = torch.tensor(dt, dtype=torch.float32, device=device)
-@@ -418,6 +430,140 @@ class PI0Pytorch(nn.Module):
+@@ -418,6 +430,168 @@ class PI0Pytorch(nn.Module):
              time += dt
          return x_t
  
@@ -246,6 +246,22 @@ index 25f0580..847e153 100644
 +        )
 +
 +    @torch.no_grad()
++    def sample_reference_action(self, device, observation, noise, num_steps=10) -> Tensor:
++        """Stable batch-one execution path shared by plain and Far-Mass inference."""
++
++        if observation.state.shape[0] != 1 or noise.shape[0] != 1:
++            raise ValueError("sample_reference_action requires batch size one")
++        state, prefix_pad_masks, past_key_values = self._encode_observation_prefix(observation)
++        return self._integrate_actions_from_noise(
++            device,
++            state,
++            prefix_pad_masks,
++            past_key_values,
++            noise,
++            num_steps=num_steps,
++        )
++
++    @torch.no_grad()
 +    def sample_action_distribution(
 +        self,
 +        device,
@@ -255,6 +271,7 @@ index 25f0580..847e153 100644
 +        noise=None,
 +        num_steps=10,
 +        seed=None,
++        reference_seed=None,
 +        return_reference_action=False,
 +        return_timing=False,
 +    ) -> Tensor | tuple[Tensor, Tensor] | tuple[Tensor, Tensor, dict[str, float]]:
@@ -313,13 +330,24 @@ index 25f0580..847e153 100644
 +            # to the original single-action policy even with identical noise.
 +            # The expensive observation prefix remains shared; only the small
 +            # action-expert integration is evaluated once more at batch size one.
++            if reference_seed is None:
++                reference_noise = noise[:1]
++            else:
++                reference_generator = torch.Generator(device=device)
++                reference_generator.manual_seed(int(reference_seed))
++                reference_noise = torch.randn(
++                    (1, self.config.action_horizon, self.config.action_dim),
++                    generator=reference_generator,
++                    dtype=torch.float32,
++                    device=device,
++                )
 +            reference_started = time.perf_counter()
 +            reference_action = self._integrate_actions_from_noise(
 +                device,
 +                state,
 +                prefix_pad_masks,
 +                past_key_values,
-+                noise[:1],
++                reference_noise,
 +                num_steps=num_steps,
 +            )
 +            synchronize()
@@ -393,10 +421,74 @@ index f16be33..810cc3b 100644
 +        actions[..., [6, 13]] = _gripper_from_angular_inv(actions[..., [6, 13]])
      return actions
 diff --git a/policy/pi05/src/openpi/policies/policy.py b/policy/pi05/src/openpi/policies/policy.py
-index b9b708b..302b47d 100644
+index b9b708b..0ad9cb4 100644
 --- a/policy/pi05/src/openpi/policies/policy.py
 +++ b/policy/pi05/src/openpi/policies/policy.py
-@@ -105,6 +105,82 @@ class Policy(BasePolicy):
+@@ -65,7 +65,13 @@ class Policy(BasePolicy):
+             self._rng = rng or jax.random.key(0)
+ 
+     @override
+-    def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
++    def infer(
++        self,
++        obs: dict,
++        *,
++        noise: np.ndarray | None = None,
++        seed: int | None = None,
++    ) -> dict:  # type: ignore[misc]
+         # Make a copy since transformations may modify the inputs in place.
+         inputs = jax.tree.map(lambda x: x, obs)
+         inputs = self._input_transform(inputs)
+@@ -80,8 +86,33 @@ class Policy(BasePolicy):
+ 
+         # Prepare kwargs for sample_actions
+         sample_kwargs = dict(self._sample_kwargs)
++        if noise is not None and seed is not None:
++            raise ValueError("Pass either noise or seed, not both")
++        seeded_pytorch_execution = seed is not None
++        if seed is not None:
++            if not self._is_pytorch_model:
++                raise TypeError("Per-request integer seeds are currently implemented for PyTorch policies")
++            generator = torch.Generator(device=self._pytorch_device)
++            generator.manual_seed(int(seed))
++            noise = torch.randn(
++                (
++                    1,
++                    self._model.config.action_horizon,
++                    self._model.config.action_dim,
++                ),
++                generator=generator,
++                dtype=torch.float32,
++                device=self._pytorch_device,
++            )
+         if noise is not None:
+-            noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
++            if self._is_pytorch_model:
++                noise = (
++                    noise.to(self._pytorch_device)
++                    if isinstance(noise, torch.Tensor)
++                    else torch.from_numpy(noise).to(self._pytorch_device)
++                )
++            else:
++                noise = jnp.asarray(noise)
+ 
+             if noise.ndim == 2:  # If noise is (action_horizon, action_dim), add batch dimension
+                 noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)
+@@ -89,9 +120,12 @@ class Policy(BasePolicy):
+ 
+         observation = _model.Observation.from_dict(inputs)
+         start_time = time.monotonic()
++        sample_actions = self._sample_actions
++        if seeded_pytorch_execution and self._is_pytorch_model:
++            sample_actions = self._model.sample_reference_action
+         outputs = {
+             "state": inputs["state"],
+-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
++            "actions": sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+         }
+         model_time = time.monotonic() - start_time
+         if self._is_pytorch_model:
+@@ -105,6 +139,84 @@ class Policy(BasePolicy):
          }
          return outputs
  
@@ -407,6 +499,7 @@ index b9b708b..302b47d 100644
 +        num_samples: int = 5,
 +        num_steps: int = 10,
 +        seed: int | None = None,
++        reference_seed: int | None = None,
 +        noise: np.ndarray | None = None,
 +    ) -> dict:
 +        """Sample a PyTorch flow policy while sharing one observation prefix.
@@ -435,6 +528,7 @@ index b9b708b..302b47d 100644
 +            noise=noise,
 +            num_steps=num_steps,
 +            seed=seed,
++            reference_seed=reference_seed,
 +            return_reference_action=True,
 +            return_timing=True,
 +        )
@@ -604,7 +698,7 @@ new file mode 100644
 index 0000000..f266b03
 --- /dev/null
 +++ b/policy/pi05/src/openpi/policies/sampling_far_mass_policy.py
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,129 @@
 +"""Policy wrapper that adds sampling-based Far Mass to a PyTorch PI0.5 policy."""
 +
 +from __future__ import annotations
@@ -682,15 +776,20 @@ index 0000000..f266b03
 +
 +    @override
 +    def infer(self, obs: dict) -> dict:
-+        if not self._config.compute_far_mass:
-+            return self._policy.infer(obs)
-+
 +        request = dict(obs)
-+        seed = request.pop("uncertainty_seed", None)
++        action_seed = request.pop("action_seed", None)
++        uncertainty_seed = request.pop("uncertainty_seed", None)
++        if not self._config.compute_far_mass:
++            return self._policy.infer(
++                request,
++                seed=None if action_seed is None else int(action_seed),
++            )
++
 +        distribution = self._policy.infer_action_distribution(
 +            request,
 +            num_samples=self._config.num_uncertainty_samples,
-+            seed=None if seed is None else int(seed),
++            seed=None if uncertainty_seed is None else int(uncertainty_seed),
++            reference_seed=None if action_seed is None else int(action_seed),
 +        )
 +        normalized_samples = distribution["normalized_action_samples"][..., :14]
 +        physical_samples = distribution["physical_action_samples"]
@@ -705,8 +804,8 @@ index 0000000..f266b03
 +        )
 +        metric_ms = (time.monotonic() - metric_started) * 1000
 +
-+        # Execute the batch-one reference trajectory, which uses the same first
-+        # noise draw but preserves the original policy's batch-one BF16 numerics.
++        # Execute a domain-separated batch-one reference trajectory. Far-Mass
++        # sampling never supplies the action that is sent to the environment.
 +        # Metric selection uses one coherent sampled trajectory as its medoid.
 +        # Execution still uses the batch-one reference trajectory so enabling
 +        # uncertainty does not change ordinary PI0.5 action numerics.

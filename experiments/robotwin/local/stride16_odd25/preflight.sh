@@ -15,6 +15,8 @@ required_files=(
   "$OPENPI_ROOT/scripts/serve_motus_robotwin.py"
   "$OPENPI_ROOT/src/openpi/uncertainty.py"
   "$ZR0_ROOT/server.py"
+  "$ADAPTIVE_COT_ROOT/experiments/robotwin/inference_repro.py"
+  "$ADAPTIVE_COT_ROOT/experiments/robotwin/audit_shared_prefix.py"
 )
 for required_file in "${required_files[@]}"; do
   [[ -f "$required_file" ]] || { echo "Missing required file: $required_file" >&2; exit 2; }
@@ -50,6 +52,9 @@ done
   cd "$ZR0_ROOT"
   "$ZR0_PYTHON" -c 'from policies.reasoning_vla_policy import ZR0Policy'
 )
+grep -q 'reference_seed' "$OPENPI_ROOT/src/openpi/models_pytorch/pi0_pytorch.py"
+grep -q 'request_seed' "$ZR0_ROOT/policies/reasoning_vla_policy.py"
+grep -q 'initial_noise' "$ZR0_ROOT/model/flow_matching_action_head.py"
 
 nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv
 printf 'odd_tasks=%s\n' "${#ODD25_TASKS[@]}"

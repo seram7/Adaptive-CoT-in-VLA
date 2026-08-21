@@ -11,6 +11,13 @@ Donghwa Kang, Sehee Kweon, Wooyul Jung
 <!-- > Embodied Chain-of-Thought (ECoT) reasoning enhances VLA models by improving performance and interpretability through intermediate reasoning steps.  -->
 <!-- However, its sequential autoregressive token generation introduces significant inference latency, limiting real-time deployment.  -->
 
+## RoboTwin PI0.5 + ZR-0 experiments
+
+The reproducible 25-task RoboTwin launcher, dependency patches, deterministic
+request protocol, and fixed/random/adaptive shared-inference setup are
+documented in
+[`experiments/robotwin/local/stride16_odd25/README.md`](experiments/robotwin/local/stride16_odd25/README.md).
+
 
 ## Dataset
 

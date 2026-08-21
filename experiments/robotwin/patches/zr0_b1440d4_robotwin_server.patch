@@ -1,5 +1,100 @@
+diff --git a/model/flow_matching_action_head.py b/model/flow_matching_action_head.py
+index d351818..3471284 100755
+--- a/model/flow_matching_action_head.py
++++ b/model/flow_matching_action_head.py
+@@ -483,8 +483,13 @@ class FlowmatchingActionHead(nn.Module):
+         output_dict = {"action_expert_loss": loss}
+         return BatchFeature(data=output_dict)
+ 
+-    def get_action(self, backbone_outputs: BatchFeature,
+-                   action_expert_inputs: BatchFeature, num_denoised_steps: int) -> BatchFeature:
++    def get_action(
++        self,
++        backbone_outputs: BatchFeature,
++        action_expert_inputs: BatchFeature,
++        num_denoised_steps: int,
++        initial_noise: torch.Tensor | None = None,
++    ) -> BatchFeature:
+         # Get vision and language embeddings
+         vl_embeds = backbone_outputs["backbone_embeddings"]
+         # vl_embeds = self.vl_embed_proj(vl_embeds) # (B, seq_len, VLM hidden size) -> (B, seq_len, DiT hidden size)
+@@ -501,11 +506,20 @@ class FlowmatchingActionHead(nn.Module):
+ 
+         # Set initial actions as the sampled noise
+         batch_size = vl_embeds.shape[0] # B
+-        actions = torch.randn(
+-            size=(batch_size, self.config.action_horizon, self.config.action_dim),
+-            dtype=vl_embeds.dtype,
+-            device=self.device,
+-        ) # (B, action_horizon, action_dim)
++        expected_shape = (batch_size, self.config.action_horizon, self.config.action_dim)
++        if initial_noise is None:
++            actions = torch.randn(
++                size=expected_shape,
++                dtype=vl_embeds.dtype,
++                device=self.device,
++            )
++        else:
++            if tuple(initial_noise.shape) != expected_shape:
++                raise ValueError(
++                    f"Expected initial action noise {expected_shape}, got {tuple(initial_noise.shape)}"
++                )
++            actions = initial_noise.to(device=self.device, dtype=vl_embeds.dtype)
++        # (B, action_horizon, action_dim)
+         actions = actions * M
+         
+         # each denoised step length is dt
+diff --git a/model/reasoning_vla_model.py b/model/reasoning_vla_model.py
+index 9490f16..9ec9e0f 100755
+--- a/model/reasoning_vla_model.py
++++ b/model/reasoning_vla_model.py
+@@ -44,14 +44,19 @@ class ZR0Model(nn.Module):
+         return backbone_inputs, action_expert_inputs
+ 
+     @torch.inference_mode()
+-    def get_action_direct(self, batch_inputs: BatchFeature, num_denoised_steps: int = 5) -> BatchFeature:
++    def get_action_direct(
++        self,
++        batch_inputs: BatchFeature,
++        num_denoised_steps: int = 5,
++        initial_noise: torch.Tensor | None = None,
++    ) -> BatchFeature:
+         with torch.no_grad():
+             backbone_inputs = self.backbone.prepare_inputs(batch_inputs)
+             backbone_outputs = self.backbone(backbone_inputs)
+ 
+             action_expert_inputs = self.action_expert.prepare_inputs(batch_inputs)
+             action_expert_outputs = self.action_expert.get_action(
+-                backbone_outputs, action_expert_inputs, num_denoised_steps
++                backbone_outputs, action_expert_inputs, num_denoised_steps, initial_noise
+             )
+         # return action_pred
+         return BatchFeature(data={"action_pred": action_expert_outputs["action_pred"]})
+@@ -76,7 +81,12 @@ class ZR0Model(nn.Module):
+         return BatchFeature({"n_action_preds": n_action_preds})
+   
+     @torch.inference_mode()
+-    def get_action_subtask(self, batch_inputs: BatchFeature, num_denoised_steps: int = 5) -> BatchFeature:
++    def get_action_subtask(
++        self,
++        batch_inputs: BatchFeature,
++        num_denoised_steps: int = 5,
++        initial_noise: torch.Tensor | None = None,
++    ) -> BatchFeature:
+         with torch.no_grad():
+             prompt_len = len(batch_inputs["input_ids"][0])
+             
+@@ -107,7 +117,7 @@ class ZR0Model(nn.Module):
+             # 4. action expert diffusion
+             action_expert_inputs = self.action_expert.prepare_inputs(batch_inputs)
+             action_expert_outputs = self.action_expert.get_action(
+-                backbone_outputs, action_expert_inputs, num_denoised_steps
++                backbone_outputs, action_expert_inputs, num_denoised_steps, initial_noise
+             )
+         # return action_pred
+         return BatchFeature(data={"action_pred": action_expert_outputs["action_pred"]})
 diff --git a/policies/reasoning_vla_policy.py b/policies/reasoning_vla_policy.py
-index 7b23b62..225d3ec 100755
+index 7b23b62..38c91d4 100755
 --- a/policies/reasoning_vla_policy.py
 +++ b/policies/reasoning_vla_policy.py
 @@ -25,7 +25,8 @@ class ZR0Policy(BasePolicy):
@@ -21,13 +116,58 @@ index 7b23b62..225d3ec 100755
          self.use_quantile = DATASET2FEATURE[dataset_entry]["use_quantile"]
          self.action_dim = json.load(open(os.path.join(self.dataset_path, "meta", "info.json")))["features"]["action"]["shape"][0]
  
-@@ -135,4 +136,4 @@ class ZR0Policy(BasePolicy):
-         self.global_inference_steps += 1
-         print("-"*30)
+@@ -61,11 +62,18 @@ class ZR0Policy(BasePolicy):
+         self.ob_buffer = ObservationBuffer(max_recent_observations = window_size)
+         self.to_tensor = ToTensor()
+         self.global_inference_steps = 0
++
++    def reset(self):
++        self.ob_buffer.reset()
++        self.global_inference_steps = 0
+         
+     def infer(self, obs: Dict) -> Dict:
++        if bool(obs.get("reset_episode", False)):
++            self.reset()
+         task = obs.get('task')
+         state = obs.get('observation.state')
+         n_action_steps = obs.get('n_action_steps')
++        request_seed = obs.get('request_seed')
+         print("task:", task)
+         if isinstance(state, np.ndarray):
+             print("state:", state.tolist())
+@@ -111,12 +119,30 @@ class ZR0Policy(BasePolicy):
+             vla_input[key] = value.to(self.device)
  
--        return {"actions": action_chunk}
-\ No newline at end of file
-+        return {"actions": action_chunk}
+         # model inference
++        initial_noise = None
++        if request_seed is not None:
++            generator = torch.Generator(device=self.device)
++            generator.manual_seed(int(request_seed))
++            initial_noise = torch.randn(
++                (
++                    1,
++                    self.model.action_expert_config.action_horizon,
++                    self.model.action_expert_config.action_dim,
++                ),
++                generator=generator,
++                dtype=torch.bfloat16,
++                device=self.device,
++            )
+         with torch.no_grad():
+             st = time.time()
+             if self.inference_mode == "direct_action":
+-                vla_outputs = self.model.get_action_direct(vla_input, self.num_denoised_steps)
++                vla_outputs = self.model.get_action_direct(
++                    vla_input, self.num_denoised_steps, initial_noise
++                )
+             elif self.inference_mode == "subtask_then_action":
+-                vla_outputs = self.model.get_action_subtask(vla_input, self.num_denoised_steps)
++                vla_outputs = self.model.get_action_subtask(
++                    vla_input, self.num_denoised_steps, initial_noise
++                )
+             print(f"vla forward takes {time.time()-st} seconds.")
+ 
+         '''
 diff --git a/server.py b/server.py
 index 93bd0be..b7ff402 100755
 --- a/server.py
@@ -49,13 +189,6 @@ index 93bd0be..b7ff402 100755
          "ckpt_dir": opt.ckpt_dir,
          "inference_mode": opt.inference_mode,
          "window_size": opt.window_size,
-@@ -54,4 +57,4 @@ def deploy():
-     server.serve_forever()
- 
- if __name__ == "__main__":
--    deploy()
-\ No newline at end of file
-+    deploy()
 diff --git a/utils/websocket_client_policy.py b/utils/websocket_client_policy.py
 index 24ad787..e0d44c1 100755
 --- a/utils/websocket_client_policy.py

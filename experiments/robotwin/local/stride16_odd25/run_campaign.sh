@@ -26,7 +26,9 @@ for task in "${ODD25_TASKS[@]}"; do
     if run_eval "$task" "$condition" pilot "$episodes" \
       "$CALIBRATION_MANIFEST_ROOT/$condition/${task}.json" \
       "$PILOT_ROOT/$condition/$task/pilot" \
-      "$RUN_LOG_DIR/pilot_${task}_${condition}.log"; then
+      "$RUN_LOG_DIR/pilot_${task}_${condition}.log" \
+      --seed-split "calibration/$condition" \
+      --inference-cache "$INFERENCE_CACHE"; then
       echo "[$(date -u +%FT%TZ)] DONE pilot ${task}/${condition}" | tee -a "$STATUS_LOG"
     else
       echo "[$(date -u +%FT%TZ)] FAIL pilot ${task}/${condition}" | tee -a "$STATUS_LOG"
@@ -59,7 +61,8 @@ run_arm() {
   if run_eval "$task" "$condition" "$mode" "$episodes" \
     "$MANIFEST_ROOT/$condition/screening/${task}.json" \
     "$MAIN_ROOT/$task/$condition/$label" \
-    "$RUN_LOG_DIR/main25_${task}_${condition}_${label}.log" "$@"; then
+    "$RUN_LOG_DIR/main25_${task}_${condition}_${label}.log" \
+    --seed-split "main/$condition" --inference-cache "$INFERENCE_CACHE" "$@"; then
     echo "[$(date -u +%FT%TZ)] DONE ${task}/${condition}/${label}" | tee -a "$STATUS_LOG"
   else
     echo "[$(date -u +%FT%TZ)] FAIL ${task}/${condition}/${label}" | tee -a "$STATUS_LOG"
@@ -75,22 +78,8 @@ for task in "${ODD25_TASKS[@]}"; do
     CAMPAIGN_FAILED=1
     continue
   fi
-  if ! start_pi05 0 "$RUN_LOG_DIR/pi05_server_nofm_main25_${task}.log"; then
-    echo "[$(date -u +%FT%TZ)] TASK_ABORT ${task}: PI0.5 startup" | tee -a "$STATUS_LOG"
-    CAMPAIGN_FAILED=1
-    stop_zr0
-    continue
-  fi
-
-  for condition in demo_clean demo_randomized; do
-    [[ "$condition" == "demo_clean" ]] && episodes=$CLEAN_MAIN_EPISODES || episodes=$RANDOM_MAIN_EPISODES
-    run_arm "$task" "$condition" baseline_pi05_only baseline "$episodes"
-    run_arm "$task" "$condition" baseline_zr0_only_direct fixed "$episodes" --cot-ratio 1.0
-    run_arm "$task" "$condition" fixed fixed "$episodes"
-    run_arm "$task" "$condition" random random "$episodes" --force-first-query
-  done
-
-  stop_pi05
+  # Adaptive populates the cache first. Fixed/random then make no duplicate
+  # policy request while their observation/decision prefix remains identical.
   if ! start_pi05 1 "$RUN_LOG_DIR/pi05_server_n5_main25_${task}.log"; then
     echo "[$(date -u +%FT%TZ)] TASK_ABORT ${task}: PI0.5 N=${NUM_UNCERTAINTY_SAMPLES} startup" | tee -a "$STATUS_LOG"
     CAMPAIGN_FAILED=1
@@ -103,6 +92,27 @@ for task in "${ODD25_TASKS[@]}"; do
       sampling_farmass_replan_max "$episodes" \
       --thresholds-json "$THRESHOLDS_JSON" \
       --cooldown-steps "$COOLDOWN_STEPS" --force-first-query
+  done
+
+  stop_pi05
+  if ! start_pi05 0 "$RUN_LOG_DIR/pi05_server_nofm_main25_${task}.log"; then
+    echo "[$(date -u +%FT%TZ)] TASK_ABORT ${task}: PI0.5 startup" | tee -a "$STATUS_LOG"
+    CAMPAIGN_FAILED=1
+    stop_zr0
+    continue
+  fi
+  for condition in demo_clean demo_randomized; do
+    [[ "$condition" == "demo_clean" ]] && episodes=$CLEAN_MAIN_EPISODES || episodes=$RANDOM_MAIN_EPISODES
+    run_arm "$task" "$condition" baseline_pi05_only baseline "$episodes"
+    run_arm "$task" "$condition" baseline_zr0_only_direct fixed "$episodes" --cot-ratio 1.0
+    run_arm "$task" "$condition" fixed fixed "$episodes"
+    run_arm "$task" "$condition" random random "$episodes" --force-first-query
+    if ! "$ROBOTWIN_PYTHON" "$ADAPTIVE_COT_ROOT/experiments/robotwin/audit_shared_prefix.py" \
+      --condition-root "$MAIN_ROOT/$task/$condition" \
+      --output "$RUN_LOG_DIR/prefix_audit_${task}_${condition}.json"; then
+      echo "[$(date -u +%FT%TZ)] FAIL prefix audit ${task}/${condition}" | tee -a "$STATUS_LOG"
+      CAMPAIGN_FAILED=1
+    fi
   done
 
   stop_pi05

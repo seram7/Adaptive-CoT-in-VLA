@@ -2,7 +2,8 @@
 
 This directory is the portable launcher for the 25 odd, zero-based RoboTwin
 task IDs. It reproduces the five-arm experiment with a 16-action replanning
-stride and lightweight sampling Flow-Far-Mass routing.
+stride, lightweight sampling Flow-Far-Mass routing, and common-request
+inference sharing (`robotwin-policy-request-v1`).
 
 ## Protocol
 
@@ -21,9 +22,35 @@ frequency matched across PI0.5-only, ZR-0-only, fixed, random, and adaptive.
 Adaptive uses five PI0.5 action samples, `force_first_query=true`, and
 `cooldown_steps=32`. Fixed and random deliberately do not use cooldown because
 their schedules are the control conditions. PI0.5 is queried first at every
-decision point to obtain the action and uncertainty; a routed ZR-0 decision is
-therefore one additional model call. Always report both `policy_queries` and
-`zr0_queries`.
+decision point to obtain the candidate action; adaptive additionally computes
+Far-Mass. A routed ZR-0 decision is therefore one additional model call. Always
+report both `policy_queries` and `zr0_queries`.
+
+### Deterministic policy requests and shared prefixes
+
+Every policy random draw uses a SHA-256-derived seed over
+`(protocol, task, split, episode_seed, query_index, stream)`. Streams are
+domain-separated as `pi05_execution`, `pi05_farmass`,
+`zr0_direct_action_execution`, and `random_router`. Routing-arm names are
+intentionally absent, so fixed/random/adaptive receive the same model output
+for the same observation and query.
+
+The main campaign runs adaptive first and persists inference results in
+`INFERENCE_CACHE` (SQLite). Later arms reuse an entry only when its exact
+observation hash, request identity, and seed match. Thus fixed, random, and
+adaptive perform no duplicate PI0.5 or ZR-0 inference along their common
+trajectory prefix. At the first different routing decision the selected
+actions differ, future observation hashes change, and each branch computes and
+caches its own requests. PI0.5 execution always uses a separately seeded N=1
+batch; the N=5 samples are used only for Far-Mass and can never become the
+executed action.
+
+ZR-0 resets its observation buffer before the first uncached inference in each
+episode and creates initial flow noise with a request-local `torch.Generator`.
+Each episode JSON records observation, PI0.5 action, ZR-0 action, selected
+action, and executed-action hashes. After each task/condition, the runner calls
+`audit_shared_prefix.py`; a hash mismatch before the first pairwise routing
+divergence makes the campaign fail and retry.
 
 Calibration and main evaluation use disjoint expert-feasible seed blocks:
 
@@ -258,10 +285,11 @@ bash /ABS/PATH/Adaptive-CoT-in-VLA/experiments/robotwin/local/stride16_odd25/lau
 
 The launcher first generates expert-feasible manifests, then collects all
 pilots, estimates 50 task-condition thresholds, and finally runs the five arms
-task by task. Completed episode JSON files are skipped on restart, and each
-episode is written atomically. The supervisor retries failures after 30
-seconds. A second supervisor for the same result directory is rejected with a
-file lock.
+task by task. Adaptive runs first to populate the shared inference cache;
+PI0.5-only, ZR-0-only, fixed, and random follow. Completed episode JSON files
+are skipped on restart, and each episode is written atomically. The supervisor
+retries failures after 30 seconds. A second supervisor for the same result
+directory is rejected with a file lock.
 
 ## Monitoring and outputs
 
@@ -271,6 +299,7 @@ tail -f /ABS/RESULTS/runner_logs/campaign25_supervisor.log
 
 find /ABS/RESULTS/pilot -name 'episode_*.json' | wc -l       # 1,250
 find /ABS/RESULTS/main_25 -name 'episode_*.json' | wc -l     # 31,250
+find /ABS/RESULTS/runner_logs -name 'prefix_audit_*.json' | wc -l  # 50
 
 nvidia-smi
 ```
